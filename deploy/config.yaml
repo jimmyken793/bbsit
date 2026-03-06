@@ -1,0 +1,15 @@
+# bbsit configuration
+# Place at: /opt/bbsit/config.yaml
+
+# Web UI listen address (LAN only — bind to specific interface or 0.0.0.0)
+listen: "0.0.0.0:9090"
+
+# SQLite database path
+db_path: "/opt/bbsit/state.db"
+
+# Root directory for compose stacks
+# Each project gets a subdirectory here: {stack_root}/{project_id}/
+stack_root: "/opt/bbsit/stacks"
+
+# Log level: debug | info | warn | error
+log_level: "info"

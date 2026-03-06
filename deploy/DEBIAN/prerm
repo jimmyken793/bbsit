@@ -1,0 +1,10 @@
+#!/bin/sh
+set -e
+
+if systemctl is-active --quiet bbsit.service 2>/dev/null; then
+    systemctl stop bbsit.service
+fi
+
+if systemctl is-enabled --quiet bbsit.service 2>/dev/null; then
+    systemctl disable bbsit.service
+fi

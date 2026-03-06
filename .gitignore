@@ -1,0 +1,20 @@
+# Binaries
+bin/
+dist/
+
+# SQLite
+*.db
+*.db-shm
+*.db-wal
+
+# Config with secrets
+/opt/bbsit/config.yaml
+
+# macOS
+.DS_Store
+
+# IDE
+.idea/
+.vscode/
+*.swp
+.claude/settings.local.json

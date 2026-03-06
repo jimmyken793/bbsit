@@ -1,0 +1,11 @@
+#!/bin/sh
+set -e
+
+mkdir -p /opt/stacks
+
+systemctl daemon-reload
+systemctl enable bbsit.service
+systemctl start bbsit.service || true
+
+echo "bbsit installed. Web UI: http://localhost:9090"
+echo "Edit config: /opt/bbsit/config.yaml, then: sudo systemctl restart bbsit"

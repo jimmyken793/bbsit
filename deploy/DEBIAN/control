@@ -1,0 +1,8 @@
+Package: bbsit
+Version: {{VERSION}}
+Architecture: {{ARCH}}
+Maintainer: bbsit
+Depends: docker.io | docker-ce, docker-compose-plugin | docker-compose
+Description: Pull-based deployment daemon for AGX Orin
+ Manages multiple Docker Compose stacks with automatic updates,
+ health checks, and rollback.

@@ -1,0 +1,219 @@
+{{define "project_form.html"}}
+{{template "head" .}}
+
+{{if .Project}}
+    <h2>Edit Project: {{.Project.DisplayName}}</h2>
+{{else}}
+    <h2>New Project</h2>
+{{end}}
+
+{{if .Error}}<div class="alert alert-error">{{.Error}}</div>{{end}}
+
+<form method="POST" action="/projects" class="project-form">
+    {{if .Project}}
+        <input type="hidden" name="_is_new" value="false">
+    {{else}}
+        <input type="hidden" name="_is_new" value="true">
+    {{end}}
+
+    <fieldset>
+        <legend>Configuration Mode</legend>
+        <label class="radio-label">
+            <input type="radio" name="config_mode" value="form"
+                {{if or (not .Project) (eq (printf "%s" .Project.ConfigMode) "form")}}checked{{end}}
+                onchange="toggleMode(this.value)"> Form (structured)
+        </label>
+        <label class="radio-label">
+            <input type="radio" name="config_mode" value="custom"
+                {{if and .Project (eq (printf "%s" .Project.ConfigMode) "custom")}}checked{{end}}
+                onchange="toggleMode(this.value)"> Custom YAML
+        </label>
+    </fieldset>
+
+    <fieldset>
+        <legend>Basic Info</legend>
+        <div class="form-row">
+            <label for="id">Project ID</label>
+            <input type="text" name="id" id="id" required pattern="[a-z0-9\-]+"
+                placeholder="e.g. webui"
+                value="{{if .Project}}{{.Project.ID}}{{end}}"
+                {{if .Project}}readonly{{end}}>
+            <small>Lowercase, alphanumeric, hyphens only.</small>
+        </div>
+        <div class="form-row">
+            <label for="display_name">Display Name</label>
+            <input type="text" name="display_name" id="display_name" required
+                placeholder="e.g. Open WebUI"
+                value="{{if .Project}}{{.Project.DisplayName}}{{end}}">
+        </div>
+        <div class="form-row">
+            <label for="stack_path">Stack Path</label>
+            <input type="text" name="stack_path" id="stack_path"
+                placeholder="Auto: {{.StackRoot}}/{id}"
+                value="{{if .Project}}{{.Project.StackPath}}{{end}}">
+            <small>Where compose.yaml and data/ live. Leave blank for default.</small>
+        </div>
+        <div class="form-row">
+            <label><input type="checkbox" name="enabled"
+                {{if or (not .Project) .Project.Enabled}}checked{{end}}>
+                Enabled (auto-poll for updates)</label>
+        </div>
+    </fieldset>
+
+    <div id="form-mode-fields">
+        <fieldset>
+            <legend>Container Image</legend>
+            <div class="form-row">
+                <label for="registry_image">Registry Image</label>
+                <input type="text" name="registry_image" id="registry_image"
+                    placeholder="e.g. registry.example.com/webui"
+                    value="{{if .Project}}{{.Project.RegistryImage}}{{end}}">
+            </div>
+            <div class="form-row">
+                <label for="image_tag">Tag</label>
+                <input type="text" name="image_tag" id="image_tag" placeholder="latest"
+                    value="{{if .Project}}{{.Project.ImageTag}}{{end}}">
+            </div>
+        </fieldset>
+
+        <fieldset>
+            <legend>Port Mappings</legend>
+            <div id="ports-list"></div>
+            <button type="button" class="btn btn-sm" onclick="addPort()">+ Add Port</button>
+            <input type="hidden" name="ports_json" id="ports_json">
+        </fieldset>
+
+        <fieldset>
+            <legend>Bind Mounts</legend>
+            <div id="volumes-list"></div>
+            <button type="button" class="btn btn-sm" onclick="addVolume()">+ Add Volume</button>
+            <input type="hidden" name="volumes_json" id="volumes_json">
+        </fieldset>
+
+        <fieldset>
+            <legend>Extra Compose Options</legend>
+            <textarea name="extra_options" rows="4"
+                placeholder="Raw YAML under the service, e.g.: runtime: nvidia">{{if .Project}}{{.Project.ExtraOptions}}{{end}}</textarea>
+        </fieldset>
+    </div>
+
+    <div id="custom-mode-fields" style="display:none">
+        <fieldset>
+            <legend>Custom compose.yaml</legend>
+            <textarea name="custom_compose" rows="20"
+                placeholder="Paste your full compose.yaml here">{{if .Project}}{{.Project.CustomCompose}}{{end}}</textarea>
+        </fieldset>
+    </div>
+
+    <fieldset>
+        <legend>Environment Variables</legend>
+        <div id="env-list"></div>
+        <button type="button" class="btn btn-sm" onclick="addEnv()">+ Add Variable</button>
+        <input type="hidden" name="env_vars_json" id="env_vars_json">
+    </fieldset>
+
+    <fieldset>
+        <legend>Health Check</legend>
+        <div class="form-row">
+            <label for="health_type">Type</label>
+            <select name="health_type" id="health_type">
+                <option value="http" {{if and .Project (eq (printf "%s" .Project.HealthType) "http")}}selected{{end}}>HTTP</option>
+                <option value="tcp" {{if and .Project (eq (printf "%s" .Project.HealthType) "tcp")}}selected{{end}}>TCP</option>
+                <option value="none" {{if and .Project (eq (printf "%s" .Project.HealthType) "none")}}selected{{end}}>None</option>
+            </select>
+        </div>
+        <div class="form-row">
+            <label for="health_target">Target</label>
+            <input type="text" name="health_target" id="health_target"
+                placeholder="http://127.0.0.1:18081/healthz"
+                value="{{if .Project}}{{.Project.HealthTarget}}{{end}}">
+        </div>
+        <div class="form-row">
+            <label for="poll_interval">Poll Interval (seconds)</label>
+            <input type="number" name="poll_interval" id="poll_interval" min="30" max="86400"
+                value="{{if .Project}}{{.Project.PollInterval}}{{else}}300{{end}}">
+        </div>
+    </fieldset>
+
+    <div class="form-actions">
+        <button type="submit" class="btn btn-primary">Save Project</button>
+        <a href="/" class="btn">Cancel</a>
+    </div>
+</form>
+
+<script>
+let ports = {{if .Project}}{{json .Project.Ports}}{{else}}[]{{end}} || [];
+let volumes = {{if .Project}}{{json .Project.Volumes}}{{else}}[]{{end}} || [];
+let envVars = {{if .Project}}{{json .Project.EnvVars}}{{else}}{}{{end}} || {};
+
+function renderPorts() {
+    const el = document.getElementById('ports-list');
+    el.innerHTML = ports.map((p, i) =>
+        '<div class="array-row">' +
+        '<input type="number" placeholder="Host port" value="' + p.host_port + '" onchange="ports[' + i + '].host_port=+this.value;syncPorts()">' +
+        ' <span>→</span> ' +
+        '<input type="number" placeholder="Container port" value="' + p.container_port + '" onchange="ports[' + i + '].container_port=+this.value;syncPorts()">' +
+        ' <select onchange="ports[' + i + '].protocol=this.value;syncPorts()">' +
+        '<option value="tcp"' + (p.protocol!=='udp'?' selected':'') + '>TCP</option>' +
+        '<option value="udp"' + (p.protocol==='udp'?' selected':'') + '>UDP</option></select>' +
+        ' <button type="button" class="btn btn-sm btn-danger" onclick="ports.splice(' + i + ',1);renderPorts()">×</button>' +
+        '</div>'
+    ).join('');
+    syncPorts();
+}
+function addPort() { ports.push({host_port:0,container_port:0,protocol:'tcp'}); renderPorts(); }
+function syncPorts() { document.getElementById('ports_json').value = JSON.stringify(ports); }
+
+function renderVolumes() {
+    const el = document.getElementById('volumes-list');
+    el.innerHTML = volumes.map((v, i) =>
+        '<div class="array-row">' +
+        '<input type="text" placeholder="Host path" value="' + v.host_path + '" onchange="volumes[' + i + '].host_path=this.value;syncVolumes()">' +
+        ' <span>→</span> ' +
+        '<input type="text" placeholder="Container path" value="' + v.container_path + '" onchange="volumes[' + i + '].container_path=this.value;syncVolumes()">' +
+        ' <label><input type="checkbox"' + (v.readonly?' checked':'') + ' onchange="volumes[' + i + '].readonly=this.checked;syncVolumes()"> ro</label>' +
+        ' <button type="button" class="btn btn-sm btn-danger" onclick="volumes.splice(' + i + ',1);renderVolumes()">×</button>' +
+        '</div>'
+    ).join('');
+    syncVolumes();
+}
+function addVolume() { volumes.push({host_path:'',container_path:'',readonly:false}); renderVolumes(); }
+function syncVolumes() { document.getElementById('volumes_json').value = JSON.stringify(volumes); }
+
+function renderEnv() {
+    const el = document.getElementById('env-list');
+    const entries = Object.entries(envVars);
+    el.innerHTML = entries.map(function(entry, i) {
+        var k = entry[0], v = entry[1];
+        return '<div class="array-row">' +
+            '<input type="text" placeholder="KEY" value="' + k + '" data-idx="' + i + '" onchange="updateEnvKey(this)">' +
+            ' <span>=</span> ' +
+            '<input type="text" placeholder="value" value="' + v + '" onchange="envVars[\'' + k + '\']=this.value;syncEnv()">' +
+            ' <button type="button" class="btn btn-sm btn-danger" onclick="delete envVars[\'' + k + '\'];renderEnv()">×</button>' +
+            '</div>';
+    }).join('');
+    syncEnv();
+}
+function addEnv() { envVars['NEW_KEY_' + Date.now()] = ''; renderEnv(); }
+function updateEnvKey(input) {
+    var entries = Object.entries(envVars);
+    var idx = +input.dataset.idx;
+    var oldKey = entries[idx][0], val = entries[idx][1];
+    delete envVars[oldKey];
+    envVars[input.value] = val;
+    syncEnv();
+}
+function syncEnv() { document.getElementById('env_vars_json').value = JSON.stringify(envVars); }
+
+function toggleMode(mode) {
+    document.getElementById('form-mode-fields').style.display = mode === 'form' ? '' : 'none';
+    document.getElementById('custom-mode-fields').style.display = mode === 'custom' ? '' : 'none';
+}
+
+renderPorts(); renderVolumes(); renderEnv();
+var cm = document.querySelector('input[name="config_mode"]:checked');
+if (cm) toggleMode(cm.value);
+</script>
+
+{{template "foot" .}}
+{{end}}

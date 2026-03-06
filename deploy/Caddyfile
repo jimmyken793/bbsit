@@ -1,0 +1,40 @@
+# /etc/caddy/Caddyfile
+#
+# Reverse proxy for all services on Orin.
+# Caddy automatically provisions HTTPS for public domains.
+# For LAN-only access, use :80 or IP-based listeners.
+
+# Deploy Agent Web UI (LAN only — do NOT expose to internet)
+:9090 {
+	reverse_proxy 127.0.0.1:9090
+}
+
+# Example: Open WebUI
+webui.example.com {
+	reverse_proxy 127.0.0.1:18081
+}
+
+# Example: API service
+api.example.com {
+	reverse_proxy 127.0.0.1:18082
+}
+
+# Example: Ollama (only if you want to expose it, usually you don't)
+# ollama.example.com {
+#     reverse_proxy 127.0.0.1:11434
+#     basicauth {
+#         admin $2a$14$... # caddy hash-password
+#     }
+# }
+
+# --- LAN-only variant (no domain, just IP:port) ---
+# If Orin doesn't have a public domain, use IP-based config:
+#
+# :80 {
+#     handle_path /webui/* {
+#         reverse_proxy 127.0.0.1:18081
+#     }
+#     handle_path /api/* {
+#         reverse_proxy 127.0.0.1:18082
+#     }
+# }
