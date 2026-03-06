@@ -1,6 +1,6 @@
 .PHONY: build build-arm64 install clean deb deb-arm64 deploy-deb deploy-deb-arm64
 
-VERSION ?= 0.1.1
+VERSION ?= 0.1.2
 
 GO_SOURCES  := $(shell find . -name '*.go') go.mod go.sum
 STATIC_FILES := $(wildcard templates/* static/*)
