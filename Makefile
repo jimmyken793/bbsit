@@ -11,8 +11,7 @@ DEB_DEPS    := deploy/bbsit.service deploy/config.yaml \
 # Phony aliases
 build:       bin/bbsit bin/bbsit-ctl
 build-arm64: bin/bbsit-arm64 bin/bbsit-ctl-arm64
-deb:         dist/bbsit_$(VERSION)_amd64.deb
-deb-arm64:   dist/bbsit_$(VERSION)_arm64.deb
+deb:         dist/bbsit_$(VERSION)_amd64.deb dist/bbsit_$(VERSION)_arm64.deb
 
 bin/ dist/:
 	mkdir -p $@
