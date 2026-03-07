@@ -1,6 +1,6 @@
 .PHONY: build build-arm64 install clean deb deb-arm64 deploy-deb deploy-deb-arm64
 
-VERSION ?= 0.1.2
+VERSION ?= 0.2.0
 
 GO_SOURCES     := $(shell find . -name '*.go' -not -path './frontend/*') go.mod go.sum
 FRONTEND_DIST  := internal/web/frontend/dist/index.html
