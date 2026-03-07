@@ -33,8 +33,12 @@ func (db *DB) Close() error {
 }
 
 func (db *DB) migrate() error {
-	_, err := db.conn.Exec(schemaV1)
-	return err
+	if _, err := db.conn.Exec(schemaV1); err != nil {
+		return err
+	}
+	// v2: add bind_host column
+	db.conn.Exec(`ALTER TABLE projects ADD COLUMN bind_host TEXT DEFAULT '127.0.0.1'`)
+	return nil
 }
 
 const schemaV1 = `
@@ -49,6 +53,7 @@ CREATE TABLE IF NOT EXISTS projects (
     ports           TEXT DEFAULT '[]',
     volumes         TEXT DEFAULT '[]',
     extra_options   TEXT DEFAULT '',
+    bind_host       TEXT DEFAULT '127.0.0.1',
 
     -- custom mode
     custom_compose  TEXT DEFAULT '',
@@ -114,12 +119,12 @@ func (db *DB) CreateProject(p *types.Project) error {
 
 	_, err = tx.Exec(`
 		INSERT INTO projects (id, display_name, config_mode,
-			registry_image, image_tag, ports, volumes, extra_options,
+			registry_image, image_tag, ports, volumes, extra_options, bind_host,
 			custom_compose, stack_path, health_type, health_target,
 			poll_interval, enabled, env_vars, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		p.ID, p.DisplayName, p.ConfigMode,
-		p.RegistryImage, p.ImageTag, string(portsJSON), string(volsJSON), p.ExtraOptions,
+		p.RegistryImage, p.ImageTag, string(portsJSON), string(volsJSON), p.ExtraOptions, p.BindHost,
 		p.CustomCompose, p.StackPath, p.HealthType, p.HealthTarget,
 		p.PollInterval, p.Enabled, string(envJSON), now, now,
 	)
@@ -144,12 +149,12 @@ func (db *DB) UpdateProject(p *types.Project) error {
 	_, err := db.conn.Exec(`
 		UPDATE projects SET
 			display_name=?, config_mode=?,
-			registry_image=?, image_tag=?, ports=?, volumes=?, extra_options=?,
+			registry_image=?, image_tag=?, ports=?, volumes=?, extra_options=?, bind_host=?,
 			custom_compose=?, stack_path=?, health_type=?, health_target=?,
 			poll_interval=?, enabled=?, env_vars=?, updated_at=?
 		WHERE id=?`,
 		p.DisplayName, p.ConfigMode,
-		p.RegistryImage, p.ImageTag, string(portsJSON), string(volsJSON), p.ExtraOptions,
+		p.RegistryImage, p.ImageTag, string(portsJSON), string(volsJSON), p.ExtraOptions, p.BindHost,
 		p.CustomCompose, p.StackPath, p.HealthType, p.HealthTarget,
 		p.PollInterval, p.Enabled, string(envJSON), now,
 		p.ID,
@@ -162,13 +167,18 @@ func (db *DB) DeleteProject(id string) error {
 	return err
 }
 
+const projectColumns = `id, display_name, config_mode,
+	registry_image, image_tag, ports, volumes, extra_options, bind_host,
+	custom_compose, stack_path, health_type, health_target,
+	poll_interval, enabled, env_vars, created_at, updated_at`
+
 func (db *DB) GetProject(id string) (*types.Project, error) {
-	row := db.conn.QueryRow(`SELECT * FROM projects WHERE id=?`, id)
+	row := db.conn.QueryRow(`SELECT `+projectColumns+` FROM projects WHERE id=?`, id)
 	return scanProject(row)
 }
 
 func (db *DB) ListProjects() ([]types.Project, error) {
-	rows, err := db.conn.Query(`SELECT * FROM projects ORDER BY id`)
+	rows, err := db.conn.Query(`SELECT ` + projectColumns + ` FROM projects ORDER BY id`)
 	if err != nil {
 		return nil, err
 	}
@@ -187,7 +197,8 @@ func (db *DB) ListProjects() ([]types.Project, error) {
 
 func (db *DB) ListProjectsWithState() ([]types.ProjectWithState, error) {
 	rows, err := db.conn.Query(`
-		SELECT p.*, s.current_digest, s.previous_digest, s.desired_digest,
+		SELECT ` + projectColumns + `,
+		       s.current_digest, s.previous_digest, s.desired_digest,
 		       s.status, s.last_check_at, s.last_deploy_at, s.last_success_at, s.last_error
 		FROM projects p
 		LEFT JOIN project_state s ON p.id = s.project_id
@@ -209,7 +220,7 @@ func (db *DB) ListProjectsWithState() ([]types.ProjectWithState, error) {
 
 		err := rows.Scan(
 			&ps.ID, &ps.DisplayName, (*string)(&ps.ConfigMode),
-			&ps.RegistryImage, &ps.ImageTag, &portsJSON, &volsJSON, &ps.ExtraOptions,
+			&ps.RegistryImage, &ps.ImageTag, &portsJSON, &volsJSON, &ps.ExtraOptions, &ps.BindHost,
 			&ps.CustomCompose, &ps.StackPath, (*string)(&ps.HealthType), &ps.HealthTarget,
 			&ps.PollInterval, &enabled, &envJSON, &createdAt, &updatedAt,
 			&curDigest, &prevDigest, &desDigest,
@@ -257,7 +268,9 @@ func (db *DB) UpdateState(s *types.ProjectState) error {
 }
 
 func (db *DB) GetState(projectID string) (*types.ProjectState, error) {
-	row := db.conn.QueryRow(`SELECT * FROM project_state WHERE project_id=?`, projectID)
+	row := db.conn.QueryRow(`SELECT project_id, current_digest, previous_digest, desired_digest,
+		status, last_check_at, last_deploy_at, last_success_at, last_error
+		FROM project_state WHERE project_id=?`, projectID)
 	var s types.ProjectState
 	var lastCheck, lastDeploy, lastSuccess sql.NullString
 	err := row.Scan(&s.ProjectID, &s.CurrentDigest, &s.PreviousDigest, &s.DesiredDigest,
@@ -346,7 +359,7 @@ func scanProject(row *sql.Row) (*types.Project, error) {
 	var createdAt, updatedAt string
 	err := row.Scan(
 		&p.ID, &p.DisplayName, (*string)(&p.ConfigMode),
-		&p.RegistryImage, &p.ImageTag, &portsJSON, &volsJSON, &p.ExtraOptions,
+		&p.RegistryImage, &p.ImageTag, &portsJSON, &volsJSON, &p.ExtraOptions, &p.BindHost,
 		&p.CustomCompose, &p.StackPath, (*string)(&p.HealthType), &p.HealthTarget,
 		&p.PollInterval, &enabled, &envJSON, &createdAt, &updatedAt,
 	)
@@ -369,7 +382,7 @@ func scanProjectRows(rows *sql.Rows) (*types.Project, error) {
 	var createdAt, updatedAt string
 	err := rows.Scan(
 		&p.ID, &p.DisplayName, (*string)(&p.ConfigMode),
-		&p.RegistryImage, &p.ImageTag, &portsJSON, &volsJSON, &p.ExtraOptions,
+		&p.RegistryImage, &p.ImageTag, &portsJSON, &volsJSON, &p.ExtraOptions, &p.BindHost,
 		&p.CustomCompose, &p.StackPath, (*string)(&p.HealthType), &p.HealthTarget,
 		&p.PollInterval, &enabled, &envJSON, &createdAt, &updatedAt,
 	)

@@ -151,6 +151,20 @@ export default function ProjectFormPage() {
                 />
               </div>
 
+              <div className="form-group">
+                <label>Port bind address</label>
+                <select
+                  className="form-control"
+                  value={form.bind_host || '127.0.0.1'}
+                  onChange={e => set('bind_host', e.target.value)}
+                  style={{ maxWidth: 200 }}
+                >
+                  <option value="127.0.0.1">127.0.0.1 (localhost only)</option>
+                  <option value="0.0.0.0">0.0.0.0 (all interfaces)</option>
+                </select>
+                <div className="form-hint">Which host IP to bind ports to. Use 0.0.0.0 to expose ports externally.</div>
+              </div>
+
               <div className="form-section">
                 <h3>Ports</h3>
                 {ports.map((pt, i) => (

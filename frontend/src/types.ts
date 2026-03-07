@@ -26,6 +26,7 @@ export interface Project {
   volumes?: VolumeMount[]
   env_vars?: Record<string, string>
   extra_options?: string
+  bind_host?: string
   custom_compose?: string
   stack_path: string
   health_type: HealthType

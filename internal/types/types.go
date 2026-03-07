@@ -72,6 +72,7 @@ type Project struct {
 	Ports         []PortMapping `json:"ports,omitempty"`
 	Volumes       []VolumeMount `json:"volumes,omitempty"`
 	ExtraOptions  string        `json:"extra_options,omitempty"` // raw YAML fragment merged into service
+	BindHost      string        `json:"bind_host,omitempty"`     // host IP for port bindings; default "127.0.0.1", use "0.0.0.0" to expose
 
 	// Custom mode fields
 	CustomCompose string `json:"custom_compose,omitempty"` // stack config: full compose YAML provided by user

@@ -97,6 +97,31 @@ func TestGenerateFormCompose_NoEnvFile(t *testing.T) {
 	}
 }
 
+func TestGenerateFormCompose_BindHost(t *testing.T) {
+	p := baseProject()
+	p.Ports = []types.PortMapping{{HostPort: 8080, ContainerPort: 80}}
+
+	// Default (empty) should use 127.0.0.1
+	got := generateFormCompose(p)
+	if !strings.Contains(got, `"127.0.0.1:8080:80"`) {
+		t.Errorf("empty bind_host should default to 127.0.0.1, got:\n%s", got)
+	}
+
+	// Explicit 0.0.0.0
+	p.BindHost = "0.0.0.0"
+	got = generateFormCompose(p)
+	if !strings.Contains(got, `"0.0.0.0:8080:80"`) {
+		t.Errorf("bind_host 0.0.0.0 not applied, got:\n%s", got)
+	}
+
+	// Explicit 127.0.0.1
+	p.BindHost = "127.0.0.1"
+	got = generateFormCompose(p)
+	if !strings.Contains(got, `"127.0.0.1:8080:80"`) {
+		t.Errorf("bind_host 127.0.0.1 not applied, got:\n%s", got)
+	}
+}
+
 func TestGenerateFormCompose_ExtraOptions(t *testing.T) {
 	p := baseProject()
 	p.ExtraOptions = "network_mode: host\nprivileged: true"

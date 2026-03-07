@@ -112,13 +112,17 @@ func generateFormCompose(p *types.Project) string {
 
 	// Ports
 	if len(p.Ports) > 0 {
+		bindHost := p.BindHost
+		if bindHost == "" {
+			bindHost = "127.0.0.1"
+		}
 		b.WriteString("    ports:\n")
 		for _, pm := range p.Ports {
 			proto := pm.Protocol
 			if proto == "" || proto == "tcp" {
-				b.WriteString(fmt.Sprintf("      - \"127.0.0.1:%d:%d\"\n", pm.HostPort, pm.ContainerPort))
+				b.WriteString(fmt.Sprintf("      - \"%s:%d:%d\"\n", bindHost, pm.HostPort, pm.ContainerPort))
 			} else {
-				b.WriteString(fmt.Sprintf("      - \"127.0.0.1:%d:%d/%s\"\n", pm.HostPort, pm.ContainerPort, proto))
+				b.WriteString(fmt.Sprintf("      - \"%s:%d:%d/%s\"\n", bindHost, pm.HostPort, pm.ContainerPort, proto))
 			}
 		}
 	}
