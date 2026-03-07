@@ -31,7 +31,7 @@ func Load(path string) (*Config, error) {
 	if err != nil {
 		if os.IsNotExist(err) {
 			if err := cfg.Validate(); err != nil {
-				return nil, fmt.Errorf("no config file found at %s and defaults are invalid: %w", path, err)
+				return nil, fmt.Errorf("no bbsit config found at %s and defaults are invalid: %w", path, err)
 			}
 			return cfg, nil
 		}
@@ -49,20 +49,20 @@ func Load(path string) (*Config, error) {
 
 func (c *Config) Validate() error {
 	if c.DBPath == "" {
-		return fmt.Errorf("config: db_path must not be empty")
+		return fmt.Errorf("bbsit config: db_path must not be empty")
 	}
 	if c.StackRoot == "" {
-		return fmt.Errorf("config: stack_root must not be empty")
+		return fmt.Errorf("bbsit config: stack_root must not be empty")
 	}
 	if c.Listen == "" {
-		return fmt.Errorf("config: listen must not be empty")
+		return fmt.Errorf("bbsit config: listen must not be empty")
 	}
 	dbDir := filepath.Dir(c.DBPath)
 	if _, err := os.Stat(dbDir); os.IsNotExist(err) {
-		return fmt.Errorf("config: db_path directory %q does not exist", dbDir)
+		return fmt.Errorf("bbsit config: db_path directory %q does not exist", dbDir)
 	}
 	if _, err := os.Stat(c.StackRoot); os.IsNotExist(err) {
-		return fmt.Errorf("config: stack_root directory %q does not exist", c.StackRoot)
+		return fmt.Errorf("bbsit config: stack_root directory %q does not exist", c.StackRoot)
 	}
 	return nil
 }

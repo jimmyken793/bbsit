@@ -6,8 +6,8 @@ import "time"
 type ConfigMode string
 
 const (
-	ConfigModeForm   ConfigMode = "form"   // agent generates from structured fields
-	ConfigModeCustom ConfigMode = "custom" // user provides raw compose YAML
+	ConfigModeForm   ConfigMode = "form"   // bbsit generates compose.yaml from structured fields
+	ConfigModeCustom ConfigMode = "custom" // user provides compose.yaml via stack config
 )
 
 type ProjectStatus string
@@ -74,7 +74,7 @@ type Project struct {
 	ExtraOptions  string        `json:"extra_options,omitempty"` // raw YAML fragment merged into service
 
 	// Custom mode fields
-	CustomCompose string `json:"custom_compose,omitempty"` // full raw compose YAML
+	CustomCompose string `json:"custom_compose,omitempty"` // stack config: full compose YAML provided by user
 
 	// Common fields
 	StackPath    string     `json:"stack_path"`    // e.g. /opt/stacks/webui

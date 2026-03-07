@@ -125,7 +125,7 @@ export default function ProjectFormPage() {
                 className={`mode-tab ${form.config_mode === 'custom' ? 'active' : ''}`}
                 onClick={() => set('config_mode', 'custom' as ConfigMode)}
               >
-                Custom compose
+                Stack config
               </button>
             </div>
           </div>
@@ -299,16 +299,16 @@ export default function ProjectFormPage() {
                   onChange={e => set('stack_path', e.target.value)}
                   placeholder="/opt/stacks/my-app"
                 />
-                <div className="form-hint">Directory where compose.yaml will be placed.</div>
+                <div className="form-hint">Directory where the generated compose.yaml will be placed.</div>
               </div>
               <div className="form-group">
-                <label>compose.yaml content</label>
+                <label>Stack config</label>
                 <textarea
                   className="form-control"
                   rows={16}
                   value={form.custom_compose || ''}
                   onChange={e => set('custom_compose', e.target.value)}
-                  placeholder={'services:\n  web:\n    image: nginx:latest\n    ports:\n      - "80:80"'}
+                  placeholder={'registry_image: registry.example.com/my-app\nimage_tag: latest\n\nports:\n  - host_port: 8080\n    container_port: 80\n\nvolumes:\n  - host_path: ./data\n    container_path: /app/data\n\nenv_vars:\n  KEY: value'}
                   required
                 />
               </div>

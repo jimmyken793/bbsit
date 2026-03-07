@@ -17,13 +17,13 @@ import (
 )
 
 func main() {
-	configPath := flag.String("config", "/opt/bbsit/config.yaml", "path to config file")
+	configPath := flag.String("config", "/opt/bbsit/config.yaml", "path to bbsit config file")
 	flag.Parse()
 
 	// Load config
 	cfg, err := config.Load(*configPath)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "load config: %v\n", err)
+		fmt.Fprintf(os.Stderr, "bbsit config: %v\n", err)
 		os.Exit(1)
 	}
 

@@ -7,7 +7,19 @@ import (
 	"strings"
 
 	"github.com/kingyoung/bbsit/internal/types"
+	"gopkg.in/yaml.v3"
 )
+
+// stackConfig is the YAML format for stack config mode.
+// It mirrors the form fields so both modes generate compose.yaml the same way.
+type stackConfig struct {
+	RegistryImage string            `yaml:"registry_image"`
+	ImageTag      string            `yaml:"image_tag"`
+	Ports         []types.PortMapping `yaml:"ports"`
+	Volumes       []types.VolumeMount `yaml:"volumes"`
+	EnvVars       map[string]string `yaml:"env_vars"`
+	ExtraOptions  string            `yaml:"extra_options"`
+}
 
 // WriteComposeFiles writes compose.yaml, compose.override.yaml, and .env to the stack directory.
 // It also ensures data directories for bind mounts exist.
@@ -22,7 +34,29 @@ func WriteComposeFiles(p *types.Project, imageOverride string) error {
 	case types.ConfigModeForm:
 		composeContent = generateFormCompose(p)
 	case types.ConfigModeCustom:
-		composeContent = p.CustomCompose
+		var sc stackConfig
+		if err := yaml.Unmarshal([]byte(p.CustomCompose), &sc); err != nil {
+			return fmt.Errorf("parse stack config: %w", err)
+		}
+		if sc.ImageTag == "" {
+			sc.ImageTag = "latest"
+		}
+		tmp := &types.Project{
+			ID:            p.ID,
+			RegistryImage: sc.RegistryImage,
+			ImageTag:      sc.ImageTag,
+			Ports:         sc.Ports,
+			Volumes:       sc.Volumes,
+			EnvVars:       sc.EnvVars,
+			ExtraOptions:  sc.ExtraOptions,
+		}
+		composeContent = generateFormCompose(tmp)
+		// Use env vars from stack config for .env file
+		if len(sc.EnvVars) > 0 {
+			p.EnvVars = sc.EnvVars
+		}
+		// Use volumes from stack config for directory creation
+		p.Volumes = sc.Volumes
 	default:
 		return fmt.Errorf("unknown config_mode: %s", p.ConfigMode)
 	}
@@ -34,7 +68,7 @@ func WriteComposeFiles(p *types.Project, imageOverride string) error {
 
 	// Write compose.override.yaml with pinned digest (if provided)
 	overridePath := filepath.Join(p.StackPath, "compose.override.yaml")
-	if imageOverride != "" && p.ConfigMode == types.ConfigModeForm {
+	if imageOverride != "" {
 		override := generateDigestOverride(p.ID, imageOverride)
 		if err := os.WriteFile(overridePath, []byte(override), 0644); err != nil {
 			return fmt.Errorf("write compose.override.yaml: %w", err)

@@ -74,7 +74,50 @@ Open http://localhost:9090 — first visit will prompt you to set a password.
 
 **Form Mode** — Define projects via structured fields in the Web UI (image, ports, volumes, env vars, health check). BBSit generates `compose.yaml` automatically.
 
-**Custom Mode** — Upload a complete `compose.yaml` directly.
+**Stack Config Mode** — Provide a Docker Compose definition directly in the Web UI. Use this when you need full control over the stack (multiple services, networks, build args, etc.). BBSit writes it to the stack directory and manages the lifecycle from there.
+
+### Stack Config Format
+
+The stack config uses the same fields as the form, written as YAML:
+
+```yaml
+registry_image: registry.example.com/my-app
+image_tag: latest
+
+ports:
+  - host_port: 8080
+    container_port: 80
+  - host_port: 9090
+    container_port: 9090
+    protocol: udp
+
+volumes:
+  - host_path: ./data
+    container_path: /app/data
+  - host_path: ./config
+    container_path: /app/config
+    readonly: true
+
+env_vars:
+  DATABASE_URL: postgres://localhost/mydb
+  API_KEY: secret123
+
+extra_options: |
+  deploy:
+    restart_policy:
+      condition: on-failure
+```
+
+| Field | Required | Description |
+|-------|----------|-------------|
+| `registry_image` | yes | Container image (e.g. `registry.example.com/my-app`) |
+| `image_tag` | no | Image tag (default: `latest`) |
+| `ports` | no | Port mappings with `host_port`, `container_port`, optional `protocol` |
+| `volumes` | no | Bind mounts with `host_path`, `container_path`, optional `readonly` |
+| `env_vars` | no | Environment variables as key-value pairs |
+| `extra_options` | no | Raw YAML fragment merged into the compose service block |
+
+BBSit generates `compose.yaml` from the stack config — same as form mode. Health check, poll interval, and enabled/disabled are configured separately below the editor.
 
 ## Deploy Flow
 
@@ -92,12 +135,46 @@ bbsit-ctl status              # All projects
 bbsit-ctl history <project>   # Deployment log
 ```
 
+## Server Config
+
+BBSit itself is configured via a YAML file (default: `/opt/bbsit/config.yaml`). Pass a custom path with `-config`:
+
+```bash
+bbsit -config /path/to/config.yaml
+```
+
+### Format
+
+```yaml
+# Web UI listen address
+listen: "0.0.0.0:9090"
+
+# SQLite database path
+db_path: "/opt/bbsit/state.db"
+
+# Root directory for compose stacks
+# Each project gets a subdirectory: {stack_root}/{project_id}/
+stack_root: "/opt/stacks"
+
+# Log level: debug | info | warn | error
+log_level: "info"
+```
+
+| Field | Required | Default | Description |
+|-------|----------|---------|-------------|
+| `listen` | yes | `0.0.0.0:9090` | Address and port for the web UI |
+| `db_path` | yes | `/opt/bbsit/state.db` | Path to SQLite database (parent directory must exist) |
+| `stack_root` | yes | `/opt/stacks` | Root directory for compose stacks (must exist) |
+| `log_level` | no | `info` | Log verbosity: `debug`, `info`, `warn`, `error` |
+
+All paths are validated at startup — bbsit will exit with a clear error if directories are missing.
+
 ## Files
 
 ```
 /opt/bbsit/
   bbsit               Binary
-  config.yaml         Config
+  config.yaml         BBSit config
   state.db            SQLite
 
 /opt/stacks/

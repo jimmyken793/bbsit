@@ -125,7 +125,7 @@ export default function ProjectDetailPage() {
 
         <div className="card">
           <div className="card-title">Config</div>
-          <div className="kv-row"><span className="key">Mode</span><span className="val">{p.config_mode}</span></div>
+          <div className="kv-row"><span className="key">Mode</span><span className="val">{p.config_mode === 'custom' ? 'Stack config' : 'Form'}</span></div>
           {p.config_mode === 'form' && <>
             <div className="kv-row"><span className="key">Image</span><span className="val">{p.registry_image}:{p.image_tag || 'latest'}</span></div>
             {p.ports?.length ? <div className="kv-row"><span className="key">Ports</span><span className="val">{p.ports.map(pt => `${pt.host_port}:${pt.container_port}`).join(', ')}</span></div> : null}
