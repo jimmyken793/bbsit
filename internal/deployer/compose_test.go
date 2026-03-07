@@ -1,6 +1,8 @@
 package deployer
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -119,5 +121,146 @@ func TestGenerateDigestOverride(t *testing.T) {
 		if !strings.Contains(got, want) {
 			t.Errorf("missing %q in override output:\n%s", want, got)
 		}
+	}
+}
+
+func TestWriteComposeFiles_FormMode(t *testing.T) {
+	dir := t.TempDir()
+	p := &types.Project{
+		ID:            "test-svc",
+		ConfigMode:    types.ConfigModeForm,
+		RegistryImage: "registry.example.com/app",
+		ImageTag:      "latest",
+		StackPath:     dir,
+		Ports:         []types.PortMapping{{HostPort: 8080, ContainerPort: 80}},
+		Volumes:       []types.VolumeMount{{HostPath: "./data", ContainerPath: "/app/data"}},
+		EnvVars:       map[string]string{"KEY": "val"},
+	}
+
+	if err := WriteComposeFiles(p, ""); err != nil {
+		t.Fatalf("WriteComposeFiles: %v", err)
+	}
+
+	// compose.yaml should exist
+	compose, err := os.ReadFile(filepath.Join(dir, "compose.yaml"))
+	if err != nil {
+		t.Fatalf("read compose.yaml: %v", err)
+	}
+	if !strings.Contains(string(compose), "registry.example.com/app:latest") {
+		t.Error("compose.yaml missing image")
+	}
+
+	// .env should exist
+	env, err := os.ReadFile(filepath.Join(dir, ".env"))
+	if err != nil {
+		t.Fatalf("read .env: %v", err)
+	}
+	if !strings.Contains(string(env), "KEY=val") {
+		t.Error(".env missing KEY=val")
+	}
+
+	// bind mount dir should exist
+	if _, err := os.Stat(filepath.Join(dir, "data")); os.IsNotExist(err) {
+		t.Error("bind mount directory not created")
+	}
+
+	// no override file without digest
+	if _, err := os.Stat(filepath.Join(dir, "compose.override.yaml")); !os.IsNotExist(err) {
+		t.Error("compose.override.yaml should not exist without digest")
+	}
+}
+
+func TestWriteComposeFiles_WithDigest(t *testing.T) {
+	dir := t.TempDir()
+	p := &types.Project{
+		ID:            "digest-svc",
+		ConfigMode:    types.ConfigModeForm,
+		RegistryImage: "registry.example.com/app",
+		ImageTag:      "latest",
+		StackPath:     dir,
+	}
+
+	if err := WriteComposeFiles(p, "sha256:abc123"); err != nil {
+		t.Fatalf("WriteComposeFiles: %v", err)
+	}
+
+	override, err := os.ReadFile(filepath.Join(dir, "compose.override.yaml"))
+	if err != nil {
+		t.Fatalf("read compose.override.yaml: %v", err)
+	}
+	if !strings.Contains(string(override), "sha256:abc123") {
+		t.Error("override missing digest")
+	}
+}
+
+func TestWriteComposeFiles_CustomMode(t *testing.T) {
+	dir := t.TempDir()
+	p := &types.Project{
+		ID:         "custom-svc",
+		ConfigMode: types.ConfigModeCustom,
+		StackPath:  dir,
+		CustomCompose: `registry_image: registry.example.com/custom
+image_tag: v2
+ports:
+  - host_port: 3000
+    container_port: 3000
+env_vars:
+  DB_URL: postgres://localhost/db
+`,
+	}
+
+	if err := WriteComposeFiles(p, ""); err != nil {
+		t.Fatalf("WriteComposeFiles: %v", err)
+	}
+
+	compose, err := os.ReadFile(filepath.Join(dir, "compose.yaml"))
+	if err != nil {
+		t.Fatalf("read compose.yaml: %v", err)
+	}
+	content := string(compose)
+	if !strings.Contains(content, "registry.example.com/custom:v2") {
+		t.Errorf("compose.yaml missing custom image, got:\n%s", content)
+	}
+	if !strings.Contains(content, "3000:3000") {
+		t.Errorf("compose.yaml missing port, got:\n%s", content)
+	}
+}
+
+func TestWriteComposeFiles_CustomMode_InvalidYAML(t *testing.T) {
+	dir := t.TempDir()
+	p := &types.Project{
+		ID:            "bad-yaml",
+		ConfigMode:    types.ConfigModeCustom,
+		StackPath:     dir,
+		CustomCompose: "registry_image:\n  - not: a string\n  - invalid: structure",
+	}
+
+	err := WriteComposeFiles(p, "")
+	if err == nil {
+		t.Fatal("expected error for invalid YAML")
+	}
+}
+
+func TestWriteEnvFile_Escaping(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, ".env")
+
+	vars := map[string]string{
+		"SIMPLE":  "value",
+		"SPACED":  "has space",
+		"QUOTED":  `has "quote`,
+		"DOLLAR":  "has$dollar",
+	}
+	if err := writeEnvFile(path, vars); err != nil {
+		t.Fatalf("writeEnvFile: %v", err)
+	}
+
+	content, _ := os.ReadFile(path)
+	s := string(content)
+	if !strings.Contains(s, "SIMPLE=value") {
+		t.Error("simple value should not be quoted")
+	}
+	if !strings.Contains(s, `SPACED="has space"`) {
+		t.Error("spaced value should be quoted")
 	}
 }
