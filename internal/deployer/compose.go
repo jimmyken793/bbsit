@@ -131,11 +131,15 @@ func generateFormCompose(p *types.Project) string {
 	if len(p.Volumes) > 0 {
 		b.WriteString("    volumes:\n")
 		for _, v := range p.Volumes {
+			hostPath := v.HostPath
+			if !filepath.IsAbs(hostPath) {
+				hostPath = filepath.Join(p.StackPath, hostPath)
+			}
 			suffix := ""
 			if v.ReadOnly {
 				suffix = ":ro"
 			}
-			b.WriteString(fmt.Sprintf("      - \"%s:%s%s\"\n", v.HostPath, v.ContainerPath, suffix))
+			b.WriteString(fmt.Sprintf("      - \"%s:%s%s\"\n", hostPath, v.ContainerPath, suffix))
 		}
 	}
 

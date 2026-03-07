@@ -76,6 +76,23 @@ func TestGenerateFormCompose_Volumes(t *testing.T) {
 	}
 }
 
+func TestGenerateFormCompose_VolumesRelativePath(t *testing.T) {
+	p := baseProject()
+	p.StackPath = "/opt/stacks/svc"
+	p.Volumes = []types.VolumeMount{
+		{HostPath: "./data", ContainerPath: "/app/data"},
+		{HostPath: "config", ContainerPath: "/app/config", ReadOnly: true},
+	}
+	got := generateFormCompose(p)
+
+	if !strings.Contains(got, `"/opt/stacks/svc/data:/app/data"`) {
+		t.Errorf("relative path ./data not resolved, got:\n%s", got)
+	}
+	if !strings.Contains(got, `"/opt/stacks/svc/config:/app/config:ro"`) {
+		t.Errorf("relative path config not resolved, got:\n%s", got)
+	}
+}
+
 func TestGenerateFormCompose_EnvFile(t *testing.T) {
 	p := baseProject()
 	p.EnvVars = map[string]string{"KEY": "val"}
