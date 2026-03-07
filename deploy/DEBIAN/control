@@ -2,7 +2,7 @@ Package: bbsit
 Version: {{VERSION}}
 Architecture: {{ARCH}}
 Maintainer: bbsit
-Depends: docker.io | docker-ce | moby-engine, docker-compose-plugin | docker-compose-v2 | docker-compose
+Depends: docker.io | docker-ce | moby-engine, docker-compose-plugin | docker-compose-v2
 Description: Pull-based deployment daemon for Linux
  Manages multiple Docker Compose stacks with automatic updates,
  health checks, and rollback.
