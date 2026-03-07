@@ -27,7 +27,15 @@ CI (build + push image)
 └─────────────────────────┘
 ```
 
-## Quick Start
+## Install
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/jimmyken793/bbsit/main/install.sh | sudo bash
+```
+
+Requires Debian/Ubuntu with Docker installed. Detects amd64/arm64 automatically.
+
+## Quick Start (build from source)
 
 ```bash
 # Build and install locally (Linux)
