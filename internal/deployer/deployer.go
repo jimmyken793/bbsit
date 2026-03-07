@@ -209,21 +209,51 @@ func (d *Deployer) Start(p *types.Project) error {
 	return nil
 }
 
+// composeBin caches the detected compose command.
+// "plugin" = docker compose, "standalone" = docker-compose
+var composeBin struct {
+	once sync.Once
+	mode string // "plugin" or "standalone"
+}
+
+func detectCompose() string {
+	composeBin.once.Do(func() {
+		// Prefer "docker compose" plugin
+		if err := exec.Command("docker", "compose", "version").Run(); err == nil {
+			composeBin.mode = "plugin"
+			return
+		}
+		// Fall back to standalone "docker-compose"
+		if _, err := exec.LookPath("docker-compose"); err == nil {
+			composeBin.mode = "standalone"
+			return
+		}
+		composeBin.mode = "plugin" // default, will fail with a clear error
+	})
+	return composeBin.mode
+}
+
 func composeCmd(stackPath string, args ...string) error {
-	fullArgs := []string{"compose"}
+	var cmd *exec.Cmd
 
-	// Always include compose.yaml
-	fullArgs = append(fullArgs, "-f", stackPath+"/compose.yaml")
-
-	// Include override if it exists
+	composeFile := stackPath + "/compose.yaml"
 	overridePath := stackPath + "/compose.override.yaml"
+
+	fileArgs := []string{"-f", composeFile}
 	if fileExists(overridePath) {
-		fullArgs = append(fullArgs, "-f", overridePath)
+		fileArgs = append(fileArgs, "-f", overridePath)
 	}
 
-	fullArgs = append(fullArgs, args...)
+	if detectCompose() == "standalone" {
+		fullArgs := append(fileArgs, args...)
+		cmd = exec.Command("docker-compose", fullArgs...)
+	} else {
+		fullArgs := []string{"compose"}
+		fullArgs = append(fullArgs, fileArgs...)
+		fullArgs = append(fullArgs, args...)
+		cmd = exec.Command("docker", fullArgs...)
+	}
 
-	cmd := exec.Command("docker", fullArgs...)
 	cmd.Dir = stackPath
 	out, err := cmd.CombinedOutput()
 	if err != nil {
