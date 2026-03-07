@@ -1,7 +1,9 @@
 package config
 
 import (
+	"fmt"
 	"os"
+	"path/filepath"
 
 	"gopkg.in/yaml.v3"
 )
@@ -28,7 +30,10 @@ func Load(path string) (*Config, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return cfg, nil // use defaults
+			if err := cfg.Validate(); err != nil {
+				return nil, fmt.Errorf("no config file found at %s and defaults are invalid: %w", path, err)
+			}
+			return cfg, nil
 		}
 		return nil, err
 	}
@@ -36,5 +41,28 @@ func Load(path string) (*Config, error) {
 	if err := yaml.Unmarshal(data, cfg); err != nil {
 		return nil, err
 	}
+	if err := cfg.Validate(); err != nil {
+		return nil, err
+	}
 	return cfg, nil
+}
+
+func (c *Config) Validate() error {
+	if c.DBPath == "" {
+		return fmt.Errorf("config: db_path must not be empty")
+	}
+	if c.StackRoot == "" {
+		return fmt.Errorf("config: stack_root must not be empty")
+	}
+	if c.Listen == "" {
+		return fmt.Errorf("config: listen must not be empty")
+	}
+	dbDir := filepath.Dir(c.DBPath)
+	if _, err := os.Stat(dbDir); os.IsNotExist(err) {
+		return fmt.Errorf("config: db_path directory %q does not exist", dbDir)
+	}
+	if _, err := os.Stat(c.StackRoot); os.IsNotExist(err) {
+		return fmt.Errorf("config: stack_root directory %q does not exist", c.StackRoot)
+	}
+	return nil
 }

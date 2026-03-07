@@ -2,6 +2,12 @@
 bin/
 dist/
 
+# Frontend build output (embedded into Go binary)
+internal/web/frontend/dist/
+
+# Frontend dependencies
+frontend/node_modules/
+
 # SQLite
 *.db
 *.db-shm
@@ -18,3 +24,7 @@ dist/
 .vscode/
 *.swp
 .claude/settings.local.json
+
+./config.yaml
+./state.db
+./stacks

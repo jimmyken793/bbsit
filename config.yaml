@@ -1,0 +1,4 @@
+listen: "127.0.0.1:9090"
+db_path: "./state.db"
+stack_root: "./stacks"
+log_level: "debug"

@@ -30,7 +30,7 @@ CI (build + push image)
 ## Quick Start
 
 ```bash
-# Build and install locally
+# Build and install locally (Linux)
 make install
 
 # Or build a .deb package
@@ -46,6 +46,29 @@ sudo systemctl enable --now bbsit
 # Open Web UI → http://<host-ip>:9090
 # First visit → set password → add projects
 ```
+
+## Local Development (macOS)
+
+```bash
+# 1. Build the frontend (one-time, rebuild after frontend changes)
+cd frontend && npm install && npm run build && cd ..
+
+# 2. Create a local config
+mkdir -p /tmp/bbsit/stacks
+cat > /tmp/bbsit/config.yaml <<'EOF'
+listen: "127.0.0.1:9090"
+db_path: "/tmp/bbsit/state.db"
+stack_root: "/tmp/bbsit/stacks"
+log_level: "debug"
+EOF
+
+# 3. Run
+go run ./cmd/bbsit -config /tmp/bbsit/config.yaml
+```
+
+Open http://localhost:9090 — first visit will prompt you to set a password.
+
+> **Note:** Deploy and health-check features require Docker. The web UI, project management, and API work without it.
 
 ## Two Modes
 
@@ -76,8 +99,6 @@ bbsit-ctl history <project>   # Deployment log
   bbsit               Binary
   config.yaml         Config
   state.db            SQLite
-  templates/          HTML
-  static/             CSS
 
 /opt/stacks/
   <project>/
