@@ -117,16 +117,14 @@ func (d *Deployer) Deploy(p *types.Project, targetDigest string, trigger types.D
 }
 
 func (d *Deployer) executeDeploy(p *types.Project, digest string, log *slog.Logger) error {
-	// Step 1: Write compose files with digest override
-	imageRef := ""
-	if p.ConfigMode == types.ConfigModeForm && digest != "" {
-		imageRef = fmt.Sprintf("%s@%s", p.RegistryImage, digest)
-	}
-	if err := WriteComposeFiles(p, imageRef); err != nil {
+	// Step 1: Write compose files (tag-based, no digest pin).
+	// Pulling by tag is reliable for multi-arch images; the digest is only
+	// used for change detection, not to specify exactly what to pull.
+	if err := WriteComposeFiles(p, ""); err != nil {
 		return fmt.Errorf("write compose files: %w", err)
 	}
 
-	// Step 2: Pull images
+	// Step 2: Pull images by tag
 	log.Info("pulling images")
 	if err := composeCmd(p.StackPath, "pull"); err != nil {
 		return fmt.Errorf("compose pull: %w", err)
