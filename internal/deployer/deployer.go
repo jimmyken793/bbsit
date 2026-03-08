@@ -132,9 +132,9 @@ func (d *Deployer) executeDeploy(p *types.Project, digest string, log *slog.Logg
 		return fmt.Errorf("compose pull: %w", err)
 	}
 
-	// Step 3: Bring up stack
+	// Step 3: Bring up stack (force-recreate ensures the new image is used)
 	log.Info("bringing up stack")
-	if err := composeCmd(p.StackPath, "up", "-d", "--remove-orphans"); err != nil {
+	if err := composeCmd(p.StackPath, "up", "-d", "--force-recreate", "--remove-orphans"); err != nil {
 		return fmt.Errorf("compose up: %w", err)
 	}
 
@@ -156,7 +156,7 @@ func (d *Deployer) executeRollback(p *types.Project, previousDigest string, log 
 		return fmt.Errorf("write rollback compose: %w", err)
 	}
 
-	if err := composeCmd(p.StackPath, "up", "-d", "--remove-orphans"); err != nil {
+	if err := composeCmd(p.StackPath, "up", "-d", "--force-recreate", "--remove-orphans"); err != nil {
 		return fmt.Errorf("compose up rollback: %w", err)
 	}
 
