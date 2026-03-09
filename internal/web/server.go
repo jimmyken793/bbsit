@@ -25,15 +25,21 @@ type Server struct {
 	log       *slog.Logger
 	sessions  sync.Map // token -> expiry
 	stackRoot string
+	hub       *Hub
 }
 
 func NewServer(database *db.DB, dep *deployer.Deployer, sched *scheduler.Scheduler, logger *slog.Logger, stackRoot string) *Server {
+	h := NewHub()
+	go h.Run()
+	dep.AddListener(h)
+
 	return &Server{
 		db:        database,
 		deployer:  dep,
 		scheduler: sched,
 		log:       logger,
 		stackRoot: stackRoot,
+		hub:       h,
 	}
 }
 
@@ -57,6 +63,11 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/projects/{id}/rollback", s.apiAuth(s.apiRollback))
 	mux.HandleFunc("POST /api/projects/{id}/stop", s.apiAuth(s.apiStop))
 	mux.HandleFunc("POST /api/projects/{id}/start", s.apiAuth(s.apiStart))
+
+	// WebSocket for real-time events
+	mux.HandleFunc("GET /ws", s.apiAuth(func(w http.ResponseWriter, r *http.Request) {
+		s.hub.HandleWS(w, r)
+	}))
 
 	// SPA fallback — serve embedded React app for all other routes
 	dist, _ := fs.Sub(frontendFS, "frontend/dist")
