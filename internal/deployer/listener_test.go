@@ -72,3 +72,30 @@ func TestEmitNoListeners(t *testing.T) {
 	// Should not panic
 	d.emit(Event{Type: EventLog, ProjectID: "p1", Message: "hello"})
 }
+
+func TestDeployEmitsEvents(t *testing.T) {
+	d := testDeployer(t)
+	l := &mockListener{}
+	d.AddListener(l)
+
+	d.emit(Event{Type: EventStepStart, ProjectID: "test", Step: "pull"})
+	d.emit(Event{Type: EventLog, ProjectID: "test", Message: "pulling..."})
+	d.emit(Event{Type: EventStepDone, ProjectID: "test", Step: "pull"})
+	d.emit(Event{Type: EventStateChange, ProjectID: "test", Status: "running"})
+	d.emit(Event{Type: EventDeployDone, ProjectID: "test", Status: "running"})
+
+	events := l.Events()
+	if len(events) != 5 {
+		t.Fatalf("got %d events, want 5", len(events))
+	}
+
+	wantTypes := []EventType{EventStepStart, EventLog, EventStepDone, EventStateChange, EventDeployDone}
+	for i, want := range wantTypes {
+		if events[i].Type != want {
+			t.Errorf("event[%d].Type = %q, want %q", i, events[i].Type, want)
+		}
+		if events[i].Timestamp.IsZero() {
+			t.Errorf("event[%d].Timestamp is zero", i)
+		}
+	}
+}

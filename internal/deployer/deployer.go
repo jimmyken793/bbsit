@@ -1,7 +1,9 @@
 package deployer
 
 import (
+	"bufio"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"os/exec"
@@ -81,6 +83,7 @@ func (d *Deployer) Deploy(p *types.Project, targetDigest string, trigger types.D
 	state.Status = types.StatusDeploying
 	state.DesiredDigest = targetDigest
 	d.db.UpdateState(state)
+	d.emit(Event{Type: EventStateChange, ProjectID: p.ID, Status: string(types.StatusDeploying)})
 
 	// Execute deployment
 	log.Info("starting deployment")
@@ -89,7 +92,13 @@ func (d *Deployer) Deploy(p *types.Project, targetDigest string, trigger types.D
 	if deployErr == nil {
 		// Health check
 		log.Info("running health check")
+		d.emit(Event{Type: EventStepStart, ProjectID: p.ID, Step: "health_check"})
 		deployErr = health.Check(p.HealthType, p.HealthTarget, 30*time.Second, 3)
+		if deployErr != nil {
+			d.emit(Event{Type: EventStepDone, ProjectID: p.ID, Step: "health_check", Error: true, Message: deployErr.Error()})
+		} else {
+			d.emit(Event{Type: EventStepDone, ProjectID: p.ID, Step: "health_check"})
+		}
 	}
 
 	if deployErr != nil {
@@ -97,20 +106,25 @@ func (d *Deployer) Deploy(p *types.Project, targetDigest string, trigger types.D
 		log.Error("deployment failed, attempting rollback", "error", deployErr)
 		d.db.FinishDeployment(deployID, types.DeployFailed, deployErr.Error())
 
+		d.emit(Event{Type: EventStepStart, ProjectID: p.ID, Step: "rollback"})
 		rollbackErr := d.executeRollback(p, state.CurrentDigest, log)
 		if rollbackErr != nil {
+			d.emit(Event{Type: EventStepDone, ProjectID: p.ID, Step: "rollback", Error: true, Message: rollbackErr.Error()})
 			log.Error("rollback also failed", "error", rollbackErr)
 			state.Status = types.StatusFailed
 			state.LastError = fmt.Sprintf("deploy: %v; rollback: %v", deployErr, rollbackErr)
 		} else {
+			d.emit(Event{Type: EventStepDone, ProjectID: p.ID, Step: "rollback"})
 			state.Status = types.StatusRolledBack
 			state.LastError = fmt.Sprintf("deploy failed: %v (rolled back)", deployErr)
 			d.db.FinishDeployment(deployID, types.DeployRolledBack, deployErr.Error())
 		}
 
+		d.emit(Event{Type: EventStateChange, ProjectID: p.ID, Status: string(state.Status)})
 		now := time.Now().UTC()
 		state.LastDeployAt = &now
 		d.db.UpdateState(state)
+		d.emit(Event{Type: EventDeployDone, ProjectID: p.ID, Status: string(state.Status), Error: true, Message: deployErr.Error()})
 		return deployErr
 	}
 
@@ -127,33 +141,45 @@ func (d *Deployer) Deploy(p *types.Project, targetDigest string, trigger types.D
 	state.LastError = ""
 	d.db.UpdateState(state)
 
+	d.emit(Event{Type: EventStateChange, ProjectID: p.ID, Status: string(types.StatusRunning)})
+	d.emit(Event{Type: EventDeployDone, ProjectID: p.ID, Status: string(types.StatusRunning)})
+
 	return nil
 }
 
 func (d *Deployer) executeDeploy(p *types.Project, digest string, log *slog.Logger) error {
-	// Step 1: Write compose files (tag-based, no digest pin).
-	// Pulling by tag is reliable for multi-arch images; the digest is only
-	// used for change detection, not to specify exactly what to pull.
+	logFn := func(line string, isErr bool) {
+		d.emit(Event{Type: EventLog, ProjectID: p.ID, Message: line, Error: isErr})
+	}
+
 	if err := WriteComposeFiles(p, ""); err != nil {
 		return fmt.Errorf("write compose files: %w", err)
 	}
 
-	// Step 2: Pull images by tag
 	log.Info("pulling images")
-	if err := composeCmd(p.StackPath, "pull"); err != nil {
+	d.emit(Event{Type: EventStepStart, ProjectID: p.ID, Step: "pull"})
+	if err := composeCmd(p.StackPath, logFn, "pull"); err != nil {
+		d.emit(Event{Type: EventStepDone, ProjectID: p.ID, Step: "pull", Error: true, Message: err.Error()})
 		return fmt.Errorf("compose pull: %w", err)
 	}
+	d.emit(Event{Type: EventStepDone, ProjectID: p.ID, Step: "pull"})
 
-	// Step 3: Bring up stack (force-recreate ensures the new image is used)
 	log.Info("bringing up stack")
-	if err := composeCmd(p.StackPath, "up", "-d", "--force-recreate", "--remove-orphans"); err != nil {
+	d.emit(Event{Type: EventStepStart, ProjectID: p.ID, Step: "up"})
+	if err := composeCmd(p.StackPath, logFn, "up", "-d", "--force-recreate", "--remove-orphans"); err != nil {
+		d.emit(Event{Type: EventStepDone, ProjectID: p.ID, Step: "up", Error: true, Message: err.Error()})
 		return fmt.Errorf("compose up: %w", err)
 	}
+	d.emit(Event{Type: EventStepDone, ProjectID: p.ID, Step: "up"})
 
 	return nil
 }
 
 func (d *Deployer) executeRollback(p *types.Project, previousDigest string, log *slog.Logger) error {
+	logFn := func(line string, isErr bool) {
+		d.emit(Event{Type: EventLog, ProjectID: p.ID, Message: line, Error: isErr})
+	}
+
 	if previousDigest == "" {
 		return fmt.Errorf("no previous digest to rollback to")
 	}
@@ -168,11 +194,10 @@ func (d *Deployer) executeRollback(p *types.Project, previousDigest string, log 
 		return fmt.Errorf("write rollback compose: %w", err)
 	}
 
-	if err := composeCmd(p.StackPath, "up", "-d", "--force-recreate", "--remove-orphans"); err != nil {
+	if err := composeCmd(p.StackPath, logFn, "up", "-d", "--force-recreate", "--remove-orphans"); err != nil {
 		return fmt.Errorf("compose up rollback: %w", err)
 	}
 
-	// Verify health after rollback
 	if err := health.Check(p.HealthType, p.HealthTarget, 30*time.Second, 3); err != nil {
 		return fmt.Errorf("health check after rollback: %w", err)
 	}
@@ -194,7 +219,7 @@ func (d *Deployer) ManualRollback(p *types.Project) error {
 
 // Stop stops a project's compose stack
 func (d *Deployer) Stop(p *types.Project) error {
-	if err := composeCmd(p.StackPath, "down"); err != nil {
+	if err := composeCmd(p.StackPath, nil, "down"); err != nil {
 		return err
 	}
 	state, _ := d.db.GetState(p.ID)
@@ -210,7 +235,7 @@ func (d *Deployer) Start(p *types.Project) error {
 	if err := WriteComposeFiles(p, ""); err != nil {
 		return err
 	}
-	if err := composeCmd(p.StackPath, "up", "-d"); err != nil {
+	if err := composeCmd(p.StackPath, nil, "up", "-d"); err != nil {
 		return err
 	}
 	state, _ := d.db.GetState(p.ID)
@@ -221,9 +246,7 @@ func (d *Deployer) Start(p *types.Project) error {
 	return nil
 }
 
-func composeCmd(stackPath string, args ...string) error {
-	var cmd *exec.Cmd
-
+func composeCmd(stackPath string, logFn func(line string, isErr bool), args ...string) error {
 	composeFile := stackPath + "/compose.yaml"
 	overridePath := stackPath + "/compose.override.yaml"
 
@@ -235,12 +258,45 @@ func composeCmd(stackPath string, args ...string) error {
 	fullArgs := []string{"compose"}
 	fullArgs = append(fullArgs, fileArgs...)
 	fullArgs = append(fullArgs, args...)
-	cmd = exec.Command("docker", fullArgs...)
-
+	cmd := exec.Command("docker", fullArgs...)
 	cmd.Dir = stackPath
-	out, err := cmd.CombinedOutput()
+
+	if logFn == nil {
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			return fmt.Errorf("%s: %s", strings.Join(args, " "), string(out))
+		}
+		return nil
+	}
+
+	stdout, err := cmd.StdoutPipe()
 	if err != nil {
-		return fmt.Errorf("%s: %s", strings.Join(args, " "), string(out))
+		return fmt.Errorf("stdout pipe: %w", err)
+	}
+	stderr, err := cmd.StderrPipe()
+	if err != nil {
+		return fmt.Errorf("stderr pipe: %w", err)
+	}
+
+	if err := cmd.Start(); err != nil {
+		return fmt.Errorf("start: %w", err)
+	}
+
+	var wg sync.WaitGroup
+	scanLines := func(r io.Reader, isErr bool) {
+		defer wg.Done()
+		scanner := bufio.NewScanner(r)
+		for scanner.Scan() {
+			logFn(scanner.Text(), isErr)
+		}
+	}
+	wg.Add(2)
+	go scanLines(stdout, false)
+	go scanLines(stderr, true)
+	wg.Wait()
+
+	if err := cmd.Wait(); err != nil {
+		return fmt.Errorf("%s: %w", strings.Join(args, " "), err)
 	}
 	return nil
 }
