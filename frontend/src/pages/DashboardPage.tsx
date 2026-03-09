@@ -1,6 +1,8 @@
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect, useRef, useCallback } from 'react'
 import { Link } from 'react-router-dom'
 import { api, ApiError } from '../api'
+import { useWebSocket } from '../hooks/useWebSocket'
+import type { DeployEvent } from '../hooks/useWebSocket'
 import type { ProjectWithState } from '../types'
 
 function StatusBadge({ status }: { status: string }) {
@@ -22,6 +24,20 @@ export default function DashboardPage() {
   }
 
   useEffect(() => { load() }, [])
+
+  const projectIds = projects.map(p => p.id)
+
+  const handleEvent = useCallback((event: DeployEvent) => {
+    if (event.type === 'state_change' && event.status) {
+      setProjects(prev => prev.map(p =>
+        p.id === event.project_id
+          ? { ...p, state: { ...p.state, status: event.status as ProjectWithState['state']['status'] } }
+          : p
+      ))
+    }
+  }, [])
+
+  useWebSocket(projectIds, handleEvent)
 
   async function handleImport(file: File) {
     setImportError('')

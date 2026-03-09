@@ -1,6 +1,8 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import { useParams, Link, useNavigate } from 'react-router-dom'
 import { api, shortDigest, fmtTime, ApiError } from '../api'
+import { useWebSocket } from '../hooks/useWebSocket'
+import type { DeployEvent } from '../hooks/useWebSocket'
 import type { ProjectDetail } from '../types'
 
 function StatusBadge({ status }: { status: string }) {
@@ -23,12 +25,37 @@ export default function ProjectDetailPage() {
 
   useEffect(() => { load() }, [load])
 
-  // Poll while deploying
+  const [logLines, setLogLines] = useState<DeployEvent[]>([])
+  const logEndRef = useRef<HTMLDivElement>(null)
+
+  const projectIds = id ? [id] : []
+
+  const handleEvent = useCallback((event: DeployEvent) => {
+    if (event.type === 'state_change' && event.status) {
+      setDetail(prev => prev ? {
+        ...prev,
+        state: { ...prev.state, status: event.status as ProjectDetail['state']['status'] }
+      } : prev)
+    }
+    if (event.type === 'deploy_done') {
+      load()
+    }
+    setLogLines(prev => [...prev, event])
+  }, [load])
+
+  useWebSocket(projectIds, handleEvent)
+
+  // Clear log when a new deploy starts
   useEffect(() => {
-    if (detail?.state.status !== 'deploying') return
-    const t = setInterval(load, 3000)
-    return () => clearInterval(t)
-  }, [detail?.state.status, load])
+    if (detail?.state.status === 'deploying') {
+      setLogLines([])
+    }
+  }, [detail?.state.status])
+
+  // Auto-scroll log
+  useEffect(() => {
+    logEndRef.current?.scrollIntoView({ behavior: 'smooth' })
+  }, [logLines])
 
   async function action(fn: () => Promise<unknown>, label: string) {
     setActionError('')
@@ -108,6 +135,25 @@ export default function ProjectDetailPage() {
           🗑 Delete
         </button>
       </div>
+
+      {logLines.length > 0 && (
+        <div className="card" style={{ marginBottom: 20 }}>
+          <div className="card-title">Deploy log</div>
+          <div className="deploy-log">
+            {logLines.map((line, i) => (
+              <div key={i} className={`log-line ${line.type}${line.error ? ' log-error' : ''}`}>
+                <span className="log-time">{new Date(line.timestamp).toLocaleTimeString()}</span>
+                {line.type === 'step_start' && <span className="log-step">▶ {line.step}</span>}
+                {line.type === 'step_done' && <span className="log-step">{line.error ? '✗' : '✓'} {line.step}</span>}
+                {line.type === 'log' && <span className="log-msg">{line.message}</span>}
+                {line.type === 'state_change' && <span className="log-status">→ {line.status}</span>}
+                {line.type === 'deploy_done' && <span className="log-status">{line.error ? '✗ Failed' : '✓ Done'}: {line.status}</span>}
+              </div>
+            ))}
+            <div ref={logEndRef} />
+          </div>
+        </div>
+      )}
 
       <div className="detail-grid">
         <div className="card">

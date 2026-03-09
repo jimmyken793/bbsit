@@ -202,3 +202,27 @@ textarea.form-control { resize: vertical; font-family: monospace; }
   gap: 6px;
 }
 .yaml-import-label:hover { border-color: var(--primary); color: var(--primary); }
+
+/* Deploy log */
+.deploy-log {
+  max-height: 300px;
+  overflow-y: auto;
+  font-family: 'SF Mono', 'Menlo', 'Monaco', monospace;
+  font-size: 12px;
+  line-height: 1.6;
+  background: #1a1a2e;
+  color: #e0e0e0;
+  padding: 12px;
+  border-radius: 6px;
+}
+.log-line { display: flex; gap: 8px; }
+.log-time { color: #666; min-width: 70px; }
+.log-step { color: #7ec8e3; font-weight: 600; }
+.log-msg { color: #c0c0c0; word-break: break-all; }
+.log-status { color: #7ec8e3; font-weight: 600; }
+.log-error .log-step,
+.log-error .log-msg,
+.log-error .log-status { color: #ff6b6b; }
+.step_start .log-step { color: #4ecdc4; }
+.step_done .log-step { color: #95e1d3; }
+.deploy_done .log-status { font-weight: 700; }
