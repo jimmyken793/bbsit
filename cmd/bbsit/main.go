@@ -50,6 +50,12 @@ func main() {
 	}
 	defer database.Close()
 
+	// Clear stale deploying states from any previous crash/restart
+	if err := database.ResetStaleStates(); err != nil {
+		logger.Error("reset stale states", "error", err)
+		os.Exit(1)
+	}
+
 	// Create deployer and scheduler
 	dep := deployer.New(database, logger)
 	sched := scheduler.New(database, dep, logger)

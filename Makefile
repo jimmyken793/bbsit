@@ -1,6 +1,6 @@
 .PHONY: build build-arm64 install clean deb deb-arm64 deploy-deb deploy-deb-arm64
 
-VERSION ?= 0.4.0
+VERSION ?= 0.4.1
 
 GO_SOURCES     := $(shell find . -name '*.go' -not -path './frontend/*') go.mod go.sum
 FRONTEND_DIST  := internal/web/frontend/dist/index.html
@@ -89,13 +89,13 @@ install: bin/bbsit bin/bbsit-ctl
 deploy-deb: dist/bbsit_$(VERSION)_amd64.deb
 	@if [ -z "$(TARGET_HOST)" ]; then echo "Set TARGET_HOST=user@ip"; exit 1; fi
 	scp $< $(TARGET_HOST):/tmp/
-	ssh $(TARGET_HOST) 'sudo dpkg -i /tmp/$(notdir $<)'
+	ssh -t $(TARGET_HOST) 'sudo dpkg -i /tmp/$(notdir $<) && sudo systemctl restart bbsit'
 	@echo "Deployed $(VERSION) to $(TARGET_HOST)"
 
 deploy-deb-arm64: dist/bbsit_$(VERSION)_arm64.deb
 	@if [ -z "$(TARGET_HOST)" ]; then echo "Set TARGET_HOST=user@ip"; exit 1; fi
 	scp $< $(TARGET_HOST):/tmp/
-	ssh $(TARGET_HOST) 'sudo dpkg -i /tmp/$(notdir $<)'
+	ssh -t $(TARGET_HOST) 'sudo dpkg -i /tmp/$(notdir $<) && sudo systemctl restart bbsit'
 	@echo "Deployed $(VERSION) to $(TARGET_HOST)"
 
 clean:

@@ -224,6 +224,88 @@ func TestUpdateState(t *testing.T) {
 	}
 }
 
+func TestResetStaleStates(t *testing.T) {
+	db := openTestDB(t)
+
+	// Create two projects: one deploying (stale), one running (healthy)
+	if err := db.CreateProject(sampleProject("proj-stale")); err != nil {
+		t.Fatalf("CreateProject: %v", err)
+	}
+	if err := db.CreateProject(sampleProject("proj-ok")); err != nil {
+		t.Fatalf("CreateProject: %v", err)
+	}
+
+	// Set proj-stale to deploying
+	staleState := &types.ProjectState{
+		ProjectID: "proj-stale",
+		Status:    types.StatusDeploying,
+	}
+	if err := db.UpdateState(staleState); err != nil {
+		t.Fatalf("UpdateState: %v", err)
+	}
+
+	// Set proj-ok to running
+	okState := &types.ProjectState{
+		ProjectID: "proj-ok",
+		Status:    types.StatusRunning,
+	}
+	if err := db.UpdateState(okState); err != nil {
+		t.Fatalf("UpdateState: %v", err)
+	}
+
+	// Insert an in_progress deployment for the stale project
+	d := &types.Deployment{
+		ProjectID: "proj-stale",
+		Status:    types.DeployInProgress,
+		Trigger:   types.TriggerManual,
+		StartedAt: time.Now().UTC(),
+	}
+	if _, err := db.InsertDeployment(d); err != nil {
+		t.Fatalf("InsertDeployment: %v", err)
+	}
+
+	// Reset
+	if err := db.ResetStaleStates(); err != nil {
+		t.Fatalf("ResetStaleStates: %v", err)
+	}
+
+	// Stale project should now be failed
+	got, err := db.GetState("proj-stale")
+	if err != nil {
+		t.Fatalf("GetState: %v", err)
+	}
+	if got.Status != types.StatusFailed {
+		t.Errorf("stale Status = %q, want failed", got.Status)
+	}
+	if got.LastError != "interrupted by restart" {
+		t.Errorf("stale LastError = %q, want 'interrupted by restart'", got.LastError)
+	}
+
+	// Running project should be untouched
+	got2, err := db.GetState("proj-ok")
+	if err != nil {
+		t.Fatalf("GetState: %v", err)
+	}
+	if got2.Status != types.StatusRunning {
+		t.Errorf("ok Status = %q, want running", got2.Status)
+	}
+
+	// In-progress deployment should be marked failed
+	deps, err := db.ListDeployments("proj-stale", 10)
+	if err != nil {
+		t.Fatalf("ListDeployments: %v", err)
+	}
+	if len(deps) != 1 {
+		t.Fatalf("len = %d, want 1", len(deps))
+	}
+	if deps[0].Status != types.DeployFailed {
+		t.Errorf("deployment Status = %q, want failed", deps[0].Status)
+	}
+	if deps[0].EndedAt == nil {
+		t.Error("deployment EndedAt = nil, want non-nil")
+	}
+}
+
 func TestInsertAndFinishDeployment(t *testing.T) {
 	db := openTestDB(t)
 

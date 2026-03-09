@@ -285,10 +285,7 @@ func composeCmd(stackPath string, logFn func(line string, isErr bool), args ...s
 	var wg sync.WaitGroup
 	scanLines := func(r io.Reader, isErr bool) {
 		defer wg.Done()
-		scanner := bufio.NewScanner(r)
-		for scanner.Scan() {
-			logFn(scanner.Text(), isErr)
-		}
+		scanDockerOutput(r, func(line string) { logFn(line, isErr) })
 	}
 	wg.Add(2)
 	go scanLines(stdout, false)
@@ -299,6 +296,44 @@ func composeCmd(stackPath string, logFn func(line string, isErr bool), args ...s
 		return fmt.Errorf("%s: %w", strings.Join(args, " "), err)
 	}
 	return nil
+}
+
+// scanDockerOutput reads lines from r, cleans docker control characters,
+// deduplicates consecutive identical lines, and calls fn for each unique line.
+// Docker Compose packs multiple layer updates into a single \n-line separated
+// by \r, so we split on \r first to process each segment individually.
+func scanDockerOutput(r io.Reader, fn func(string)) {
+	scanner := bufio.NewScanner(r)
+	var prevLine string
+	for scanner.Scan() {
+		segments := strings.Split(scanner.Text(), "\r")
+		for _, seg := range segments {
+			line := stripANSI(seg)
+			if line == "" || line == prevLine {
+				continue
+			}
+			prevLine = line
+			fn(line)
+		}
+	}
+}
+
+// stripANSI removes ANSI escape sequences and trims whitespace.
+func stripANSI(s string) string {
+	var b strings.Builder
+	b.Grow(len(s))
+	for i := 0; i < len(s); i++ {
+		if s[i] == '\x1b' && i+1 < len(s) && s[i+1] == '[' {
+			// Skip until we find the terminating letter (@ through ~)
+			i += 2
+			for i < len(s) && (s[i] < '@' || s[i] > '~') {
+				i++
+			}
+			continue
+		}
+		b.WriteByte(s[i])
+	}
+	return strings.TrimSpace(b.String())
 }
 
 func fileExists(path string) bool {

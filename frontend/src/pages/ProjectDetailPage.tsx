@@ -26,7 +26,7 @@ export default function ProjectDetailPage() {
   useEffect(() => { load() }, [load])
 
   const [logLines, setLogLines] = useState<DeployEvent[]>([])
-  const logEndRef = useRef<HTMLDivElement>(null)
+  const logContainerRef = useRef<HTMLDivElement>(null)
 
   const projectIds = id ? [id] : []
 
@@ -52,9 +52,10 @@ export default function ProjectDetailPage() {
     }
   }, [detail?.state.status])
 
-  // Auto-scroll log
+  // Auto-scroll log container only
   useEffect(() => {
-    logEndRef.current?.scrollIntoView({ behavior: 'smooth' })
+    const el = logContainerRef.current
+    if (el) el.scrollTop = el.scrollHeight
   }, [logLines])
 
   async function action(fn: () => Promise<unknown>, label: string) {
@@ -139,7 +140,7 @@ export default function ProjectDetailPage() {
       {logLines.length > 0 && (
         <div className="card" style={{ marginBottom: 20 }}>
           <div className="card-title">Deploy log</div>
-          <div className="deploy-log">
+          <div className="deploy-log" ref={logContainerRef}>
             {logLines.map((line, i) => (
               <div key={i} className={`log-line ${line.type}${line.error ? ' log-error' : ''}`}>
                 <span className="log-time">{new Date(line.timestamp).toLocaleTimeString()}</span>
@@ -150,7 +151,6 @@ export default function ProjectDetailPage() {
                 {line.type === 'deploy_done' && <span className="log-status">{line.error ? '✗ Failed' : '✓ Done'}: {line.status}</span>}
               </div>
             ))}
-            <div ref={logEndRef} />
           </div>
         </div>
       )}

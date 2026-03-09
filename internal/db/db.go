@@ -284,6 +284,27 @@ func (db *DB) GetState(projectID string) (*types.ProjectState, error) {
 	return &s, nil
 }
 
+// ResetStaleStates clears any "deploying" project states and incomplete deployments
+// left over from a previous crash or restart.
+func (db *DB) ResetStaleStates() error {
+	now := time.Now().UTC().Format(time.RFC3339)
+	_, err := db.conn.Exec(`
+		UPDATE project_state SET status=?, last_error='interrupted by restart'
+		WHERE status=?`,
+		types.StatusFailed, types.StatusDeploying)
+	if err != nil {
+		return fmt.Errorf("reset stale states: %w", err)
+	}
+	_, err = db.conn.Exec(`
+		UPDATE deployments SET status=?, ended_at=?, error_message='interrupted by restart'
+		WHERE status=?`,
+		types.DeployFailed, now, types.DeployInProgress)
+	if err != nil {
+		return fmt.Errorf("reset stale deployments: %w", err)
+	}
+	return nil
+}
+
 // --- Deployments ---
 
 func (db *DB) InsertDeployment(d *types.Deployment) (int64, error) {
