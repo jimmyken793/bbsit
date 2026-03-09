@@ -15,9 +15,10 @@ import (
 )
 
 type Deployer struct {
-	db    *db.DB
-	locks sync.Map // project_id -> *sync.Mutex
-	log   *slog.Logger
+	db        *db.DB
+	locks     sync.Map // project_id -> *sync.Mutex
+	log       *slog.Logger
+	listeners []DeployListener
 }
 
 func New(database *db.DB, logger *slog.Logger) *Deployer {
@@ -30,6 +31,19 @@ func New(database *db.DB, logger *slog.Logger) *Deployer {
 func (d *Deployer) getLock(projectID string) *sync.Mutex {
 	val, _ := d.locks.LoadOrStore(projectID, &sync.Mutex{})
 	return val.(*sync.Mutex)
+}
+
+func (d *Deployer) AddListener(l DeployListener) {
+	d.listeners = append(d.listeners, l)
+}
+
+func (d *Deployer) emit(e Event) {
+	if e.Timestamp.IsZero() {
+		e.Timestamp = time.Now().UTC()
+	}
+	for _, l := range d.listeners {
+		l.OnEvent(e)
+	}
 }
 
 // Deploy executes a full deployment transaction for a project.
