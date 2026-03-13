@@ -2,16 +2,22 @@ import { useState, useEffect } from 'react'
 import type { FormEvent } from 'react'
 import { useParams, useNavigate, Link } from 'react-router-dom'
 import { api, ApiError } from '../api'
-import type { Project, PortMapping, VolumeMount, ConfigMode, HealthType } from '../types'
+import { formToYaml, yamlToForm } from '../stackYaml'
+import type { Project, ServiceConfig, PortMapping, VolumeMount, HealthType } from '../types'
+
+const emptyService: ServiceConfig = {
+  name: '',
+  registry_image: '',
+  image_tag: 'latest',
+  polled: true,
+}
 
 const defaultProject: Partial<Project> = {
   config_mode: 'form',
-  image_tag: 'latest',
   health_type: 'none',
   poll_interval: 300,
   enabled: true,
-  ports: [],
-  volumes: [],
+  services: [],
   env_vars: {},
 }
 
@@ -21,9 +27,11 @@ export default function ProjectFormPage() {
   const isEdit = !!id
 
   const [form, setForm] = useState<Partial<Project>>(defaultProject)
-  const [ports, setPorts] = useState<PortMapping[]>([])
-  const [volumes, setVolumes] = useState<VolumeMount[]>([])
+  const [services, setServices] = useState<ServiceConfig[]>([])
   const [envPairs, setEnvPairs] = useState<[string, string][]>([])
+  const [viewMode, setViewMode] = useState<'form' | 'yaml'>('form')
+  const [yamlText, setYamlText] = useState('')
+  const [yamlError, setYamlError] = useState('')
   const [loading, setLoading] = useState(isEdit)
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
@@ -32,10 +40,38 @@ export default function ProjectFormPage() {
     if (!isEdit) return
     api.projects.get(id!).then(d => {
       const p = d.project
-      setForm(p)
-      setPorts(p.ports || [])
-      setVolumes(p.volumes || [])
-      setEnvPairs(Object.entries(p.env_vars || {}))
+      setForm({ ...p, config_mode: 'form' })
+      // Populate services from project
+      if (p.services && p.services.length > 0) {
+        setServices(p.services)
+        setEnvPairs(Object.entries(p.env_vars || {}))
+      } else if (p.config_mode === 'custom' && p.custom_compose) {
+        // Auto-convert custom_compose to form state
+        try {
+          const result = yamlToForm(p.custom_compose)
+          setServices(result.services.map((s, i) => ({
+            ...s,
+            name: s.name || (i === 0 ? p.id : `service-${i + 1}`),
+          })))
+          setEnvPairs(result.envPairs)
+        } catch {
+          setServices([])
+          setEnvPairs(Object.entries(p.env_vars || {}))
+        }
+      } else if (p.registry_image) {
+        setServices([{
+          name: p.id,
+          registry_image: p.registry_image,
+          image_tag: p.image_tag || 'latest',
+          polled: true,
+          ports: p.ports,
+          volumes: p.volumes,
+          extra_options: p.extra_options,
+        }])
+        setEnvPairs(Object.entries(p.env_vars || {}))
+      } else {
+        setEnvPairs(Object.entries(p.env_vars || {}))
+      }
       setLoading(false)
     }).catch(() => setLoading(false))
   }, [id, isEdit])
@@ -44,15 +80,55 @@ export default function ProjectFormPage() {
     setForm(f => ({ ...f, [key]: val }))
   }
 
+  function updateService(i: number, updates: Partial<ServiceConfig>) {
+    setServices(svcs => svcs.map((s, j) => j === i ? { ...s, ...updates } : s))
+  }
+
+  function updateServicePort(svcIdx: number, portIdx: number, updates: Partial<PortMapping>) {
+    setServices(svcs => svcs.map((s, j) => {
+      if (j !== svcIdx) return s
+      const ports = [...(s.ports || [])]
+      ports[portIdx] = { ...ports[portIdx], ...updates }
+      return { ...s, ports }
+    }))
+  }
+
+  function updateServiceVolume(svcIdx: number, volIdx: number, updates: Partial<VolumeMount>) {
+    setServices(svcs => svcs.map((s, j) => {
+      if (j !== svcIdx) return s
+      const volumes = [...(s.volumes || [])]
+      volumes[volIdx] = { ...volumes[volIdx], ...updates }
+      return { ...s, volumes }
+    }))
+  }
+
   async function handleSubmit(e: FormEvent) {
     e.preventDefault()
     setError('')
 
+    // If on YAML view, parse YAML into form state before saving
+    let finalServices = services
+    let finalEnvPairs = envPairs
+    if (viewMode === 'yaml') {
+      try {
+        const result = yamlToForm(yamlText)
+        finalServices = result.services
+        finalEnvPairs = result.envPairs
+        setServices(finalServices)
+        setEnvPairs(finalEnvPairs)
+        setYamlError('')
+      } catch (e) {
+        setYamlError(e instanceof Error ? e.message : 'Invalid YAML')
+        return
+      }
+    }
+
     const payload: Partial<Project> = {
       ...form,
-      ports,
-      volumes,
-      env_vars: Object.fromEntries(envPairs.filter(([k]) => k.trim())),
+      config_mode: 'form',
+      custom_compose: '',
+      services: finalServices,
+      env_vars: Object.fromEntries(finalEnvPairs.filter(([k]) => k.trim())),
     }
 
     setSaving(true)
@@ -77,7 +153,7 @@ export default function ProjectFormPage() {
       <div style={{ marginBottom: 20 }}>
         <div style={{ marginBottom: 4 }}>
           <Link to={isEdit ? `/projects/${id}` : '/'} style={{ color: 'var(--muted)', fontSize: 13 }}>
-            ← {isEdit ? 'Back to project' : 'Projects'}
+            &larr; {isEdit ? 'Back to project' : 'Projects'}
           </Link>
         </div>
         <h2>{isEdit ? `Edit ${form.display_name || id}` : 'New project'}</h2>
@@ -111,46 +187,43 @@ export default function ProjectFormPage() {
           </div>
 
           <div className="form-group">
-            <label>Config mode</label>
+            <label>Edit mode</label>
             <div className="mode-tabs">
               <button
                 type="button"
-                className={`mode-tab ${form.config_mode === 'form' ? 'active' : ''}`}
-                onClick={() => set('config_mode', 'form' as ConfigMode)}
+                className={`mode-tab ${viewMode === 'form' ? 'active' : ''}`}
+                onClick={() => {
+                  if (viewMode === 'yaml') {
+                    try {
+                      const result = yamlToForm(yamlText)
+                      setServices(result.services)
+                      setEnvPairs(result.envPairs)
+                      setYamlError('')
+                      setViewMode('form')
+                    } catch (e) {
+                      setYamlError(e instanceof Error ? e.message : 'Invalid YAML')
+                    }
+                  }
+                }}
               >
                 Form
               </button>
               <button
                 type="button"
-                className={`mode-tab ${form.config_mode === 'custom' ? 'active' : ''}`}
-                onClick={() => set('config_mode', 'custom' as ConfigMode)}
+                className={`mode-tab ${viewMode === 'yaml' ? 'active' : ''}`}
+                onClick={() => {
+                  setYamlText(formToYaml(services, envPairs))
+                  setYamlError('')
+                  setViewMode('yaml')
+                }}
               >
-                Stack config
+                YAML
               </button>
             </div>
           </div>
 
-          {form.config_mode === 'form' ? (
+          {viewMode === 'form' ? (
             <>
-              <div className="form-group">
-                <label>Registry image</label>
-                <input
-                  className="form-control"
-                  value={form.registry_image || ''}
-                  onChange={e => set('registry_image', e.target.value)}
-                  placeholder="registry.example.com/my-app"
-                />
-              </div>
-              <div className="form-group">
-                <label>Image tag</label>
-                <input
-                  className="form-control"
-                  value={form.image_tag || ''}
-                  onChange={e => set('image_tag', e.target.value)}
-                  placeholder="latest"
-                />
-              </div>
-
               <div className="form-group">
                 <label>Port bind address</label>
                 <select
@@ -166,100 +239,120 @@ export default function ProjectFormPage() {
               </div>
 
               <div className="form-section">
-                <h3>Ports</h3>
-                {ports.map((pt, i) => (
-                  <div key={i} className="list-row">
-                    <input
-                      type="number"
-                      className="form-control"
-                      placeholder="Host port"
-                      value={pt.host_port || ''}
-                      onChange={e => {
-                        const next = [...ports]
-                        next[i] = { ...next[i], host_port: +e.target.value }
-                        setPorts(next)
-                      }}
-                    />
-                    <span>:</span>
-                    <input
-                      type="number"
-                      className="form-control"
-                      placeholder="Container port"
-                      value={pt.container_port || ''}
-                      onChange={e => {
-                        const next = [...ports]
-                        next[i] = { ...next[i], container_port: +e.target.value }
-                        setPorts(next)
-                      }}
-                    />
-                    <select
-                      className="form-control"
-                      style={{ maxWidth: 80 }}
-                      value={pt.protocol || 'tcp'}
-                      onChange={e => {
-                        const next = [...ports]
-                        next[i] = { ...next[i], protocol: e.target.value }
-                        setPorts(next)
-                      }}
-                    >
-                      <option value="tcp">TCP</option>
-                      <option value="udp">UDP</option>
-                    </select>
-                    <button type="button" className="btn btn-outline btn-sm" onClick={() => setPorts(ports.filter((_, j) => j !== i))}>✕</button>
-                  </div>
-                ))}
-                <button type="button" className="btn btn-outline btn-sm" onClick={() => setPorts([...ports, { host_port: 0, container_port: 0 }])}>
-                  + Add port
-                </button>
-              </div>
+                <h3>Services</h3>
+                {services.map((svc, si) => (
+                  <div key={si} className="card" style={{ marginBottom: 12, padding: 12, background: 'var(--bg)' }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
+                      <strong>Service {si + 1}</strong>
+                      {services.length > 1 && (
+                        <button type="button" className="btn btn-outline btn-sm" onClick={() => setServices(services.filter((_, j) => j !== si))}>
+                          Remove
+                        </button>
+                      )}
+                    </div>
 
-              <div className="form-section">
-                <h3>Volumes</h3>
-                {volumes.map((v, i) => (
-                  <div key={i} className="list-row">
-                    <input
-                      className="form-control"
-                      placeholder="Host path"
-                      value={v.host_path}
-                      onChange={e => {
-                        const next = [...volumes]
-                        next[i] = { ...next[i], host_path: e.target.value }
-                        setVolumes(next)
-                      }}
-                    />
-                    <span>:</span>
-                    <input
-                      className="form-control"
-                      placeholder="Container path"
-                      value={v.container_path}
-                      onChange={e => {
-                        const next = [...volumes]
-                        next[i] = { ...next[i], container_path: e.target.value }
-                        setVolumes(next)
-                      }}
-                    />
-                    <label style={{ whiteSpace: 'nowrap', display: 'flex', alignItems: 'center', gap: 4, fontSize: 12 }}>
+                    <div className="form-group">
+                      <label>Service name</label>
                       <input
-                        type="checkbox"
-                        checked={v.readonly || false}
-                        onChange={e => {
-                          const next = [...volumes]
-                          next[i] = { ...next[i], readonly: e.target.checked }
-                          setVolumes(next)
-                        }}
+                        className="form-control"
+                        value={svc.name}
+                        onChange={e => updateService(si, { name: e.target.value })}
+                        placeholder="app"
+                        required
                       />
-                      ro
-                    </label>
-                    <button type="button" className="btn btn-outline btn-sm" onClick={() => setVolumes(volumes.filter((_, j) => j !== i))}>✕</button>
+                      <div className="form-hint">Used as the compose service name.</div>
+                    </div>
+
+                    <div className="form-group">
+                      <label>Registry image</label>
+                      <input
+                        className="form-control"
+                        value={svc.registry_image}
+                        onChange={e => updateService(si, { registry_image: e.target.value })}
+                        placeholder="registry.example.com/my-app"
+                      />
+                    </div>
+
+                    <div style={{ display: 'flex', gap: 8 }}>
+                      <div className="form-group" style={{ flex: 1 }}>
+                        <label>Image tag</label>
+                        <input
+                          className="form-control"
+                          value={svc.image_tag}
+                          onChange={e => updateService(si, { image_tag: e.target.value })}
+                          placeholder="latest"
+                        />
+                      </div>
+                      <div className="form-group">
+                        <label className="checkbox-label" style={{ marginTop: 24 }}>
+                          <input
+                            type="checkbox"
+                            checked={svc.polled}
+                            onChange={e => updateService(si, { polled: e.target.checked })}
+                          />
+                          Poll for updates
+                        </label>
+                      </div>
+                    </div>
+
+                    <div className="form-section" style={{ marginTop: 8 }}>
+                      <label style={{ fontWeight: 600, fontSize: 13 }}>Ports</label>
+                      {(svc.ports || []).map((pt, pi) => (
+                        <div key={pi} className="list-row">
+                          <input type="number" className="form-control" placeholder="Host" value={pt.host_port || ''} onChange={e => updateServicePort(si, pi, { host_port: +e.target.value })} />
+                          <span>:</span>
+                          <input type="number" className="form-control" placeholder="Container" value={pt.container_port || ''} onChange={e => updateServicePort(si, pi, { container_port: +e.target.value })} />
+                          <select className="form-control" style={{ maxWidth: 80 }} value={pt.protocol || 'tcp'} onChange={e => updateServicePort(si, pi, { protocol: e.target.value })}>
+                            <option value="tcp">TCP</option>
+                            <option value="udp">UDP</option>
+                          </select>
+                          <button type="button" className="btn btn-outline btn-sm" onClick={() => updateService(si, { ports: (svc.ports || []).filter((_, j) => j !== pi) })}>✕</button>
+                        </div>
+                      ))}
+                      <button type="button" className="btn btn-outline btn-sm" onClick={() => updateService(si, { ports: [...(svc.ports || []), { host_port: 0, container_port: 0 }] })}>
+                        + Add port
+                      </button>
+                    </div>
+
+                    <div className="form-section" style={{ marginTop: 8 }}>
+                      <label style={{ fontWeight: 600, fontSize: 13 }}>Volumes</label>
+                      {(svc.volumes || []).map((v, vi) => (
+                        <div key={vi} className="list-row">
+                          <input className="form-control" placeholder="Host path" value={v.host_path} onChange={e => updateServiceVolume(si, vi, { host_path: e.target.value })} />
+                          <span>:</span>
+                          <input className="form-control" placeholder="Container path" value={v.container_path} onChange={e => updateServiceVolume(si, vi, { container_path: e.target.value })} />
+                          <label style={{ whiteSpace: 'nowrap', display: 'flex', alignItems: 'center', gap: 4, fontSize: 12 }}>
+                            <input type="checkbox" checked={v.readonly || false} onChange={e => updateServiceVolume(si, vi, { readonly: e.target.checked })} />
+                            ro
+                          </label>
+                          <button type="button" className="btn btn-outline btn-sm" onClick={() => updateService(si, { volumes: (svc.volumes || []).filter((_, j) => j !== vi) })}>✕</button>
+                        </div>
+                      ))}
+                      <button type="button" className="btn btn-outline btn-sm" onClick={() => updateService(si, { volumes: [...(svc.volumes || []), { host_path: '', container_path: '' }] })}>
+                        + Add volume
+                      </button>
+                    </div>
+
+                    <div className="form-section" style={{ marginTop: 8 }}>
+                      <label style={{ fontWeight: 600, fontSize: 13 }}>Extra options</label>
+                      <textarea
+                        className="form-control"
+                        rows={3}
+                        value={svc.extra_options || ''}
+                        onChange={e => updateService(si, { extra_options: e.target.value })}
+                        placeholder={'# Raw YAML merged into this service\ndeploy:\n  restart_policy:\n    condition: on-failure'}
+                      />
+                    </div>
                   </div>
                 ))}
-                <button type="button" className="btn btn-outline btn-sm" onClick={() => setVolumes([...volumes, { host_path: '', container_path: '' }])}>
-                  + Add volume
+                <button type="button" className="btn btn-outline btn-sm" onClick={() => setServices([...services, { ...emptyService }])}>
+                  + Add service
                 </button>
               </div>
 
               <div className="form-section">
                 <h3>Environment variables</h3>
+                <div className="form-hint" style={{ marginBottom: 8 }}>Shared across all services via .env file.</div>
                 {envPairs.map(([k, v], i) => (
                   <div key={i} className="list-row">
                     <input
@@ -290,41 +383,20 @@ export default function ProjectFormPage() {
                   + Add variable
                 </button>
               </div>
-
-              <div className="form-section">
-                <h3>Extra options</h3>
-                <textarea
-                  className="form-control"
-                  rows={4}
-                  value={form.extra_options || ''}
-                  onChange={e => set('extra_options', e.target.value)}
-                  placeholder={'# Raw YAML merged into the service definition\ndeploy:\n  restart_policy:\n    condition: on-failure'}
-                />
-                <div className="form-hint">Raw YAML fragment merged into the compose service block.</div>
-              </div>
             </>
           ) : (
             <>
+              {yamlError && <div className="alert alert-danger">{yamlError}</div>}
               <div className="form-group">
-                <label>Stack path</label>
-                <input
-                  className="form-control"
-                  value={form.stack_path || ''}
-                  onChange={e => set('stack_path', e.target.value)}
-                  placeholder="/opt/stacks/my-app"
-                />
-                <div className="form-hint">Directory where the generated compose.yaml will be placed.</div>
-              </div>
-              <div className="form-group">
-                <label>Stack config</label>
+                <label>Stack config (YAML)</label>
                 <textarea
                   className="form-control"
                   rows={16}
-                  value={form.custom_compose || ''}
-                  onChange={e => set('custom_compose', e.target.value)}
-                  placeholder={'registry_image: registry.example.com/my-app\nimage_tag: latest\n\nports:\n  - host_port: 8080\n    container_port: 80\n\nvolumes:\n  - host_path: ./data\n    container_path: /app/data\n\nenv_vars:\n  KEY: value'}
-                  required
+                  value={yamlText}
+                  onChange={e => { setYamlText(e.target.value); setYamlError('') }}
+                  placeholder={'services:\n  - name: app\n    registry_image: registry.example.com/my-app\n    image_tag: latest\n    polled: true\n    ports:\n      - host_port: 8080\n        container_port: 80\n\nenv_vars:\n  KEY: value'}
                 />
+                <div className="form-hint">Edit as YAML. Switch to Form to see structured fields.</div>
               </div>
             </>
           )}
@@ -334,7 +406,7 @@ export default function ProjectFormPage() {
           <div className="card-title">Health &amp; scheduling</div>
 
           <div className="form-group">
-            <label>Health check</label>
+            <label>Health check (stack-level)</label>
             <select
               className="form-control"
               value={form.health_type || 'none'}
@@ -369,7 +441,7 @@ export default function ProjectFormPage() {
               min={10}
               style={{ maxWidth: 140 }}
             />
-            <div className="form-hint">How often to check for a new image digest.</div>
+            <div className="form-hint">How often to check for new image digests.</div>
           </div>
 
           <div className="form-group">
@@ -387,7 +459,7 @@ export default function ProjectFormPage() {
 
         <div style={{ marginTop: 16, display: 'flex', gap: 8 }}>
           <button type="submit" className="btn btn-primary" disabled={saving}>
-            {saving ? <><span className="spinner" /> Saving…</> : (isEdit ? 'Save changes' : 'Create project')}
+            {saving ? <><span className="spinner" /> Saving&hellip;</> : (isEdit ? 'Save changes' : 'Create project')}
           </button>
           <Link to={isEdit ? `/projects/${id}` : '/'} className="btn btn-outline">Cancel</Link>
         </div>

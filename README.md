@@ -78,15 +78,30 @@ Open http://localhost:9090 — first visit will prompt you to set a password.
 
 > **Note:** Deploy and health-check features require Docker. The web UI, project management, and API work without it.
 
-## Two Modes
+## Project Configuration
 
-**Form Mode** — Define projects via structured fields in the Web UI (image, ports, volumes, env vars, health check). BBSit generates `compose.yaml` automatically.
+Projects are configured via a structured form in the Web UI. Each project can have one or more services, each with its own image, ports, volumes, and polling settings. BBSit generates `compose.yaml` automatically.
 
-**Stack Config Mode** — Provide a Docker Compose definition directly in the Web UI. Use this when you need full control over the stack (multiple services, networks, build args, etc.). BBSit writes it to the stack directory and manages the lifecycle from there.
+The editor has two views — **Form** for structured fields and **YAML** for quick bulk editing. Switching between them converts the data, so you can use whichever is faster for the task at hand.
 
-### Stack Config Format
+### Multi-Service Stacks
 
-The stack config uses the same fields as the form, written as YAML:
+A single project can contain multiple services (e.g., app + database + redis). Add services via the "Add service" button. Each service has:
+
+- **Name** — Used as the Docker Compose service name
+- **Registry image + tag** — The container image to deploy
+- **Polled** — Whether bbsit polls the registry for new digests (enable for app images, disable for stable base images like `postgres`)
+- **Ports, volumes, extra options** — Per-service configuration
+
+Environment variables are shared across all services via a `.env` file.
+
+When any polled service has a new digest, bbsit redeploys the entire stack. Rollbacks are atomic — all services revert together to their previous digest snapshot.
+
+### YAML Format
+
+The YAML view uses the same fields as the form. You can define a single service using top-level fields, or multiple services using the `services` array.
+
+**Single service:**
 
 ```yaml
 registry_image: registry.example.com/my-app
@@ -95,20 +110,13 @@ image_tag: latest
 ports:
   - host_port: 8080
     container_port: 80
-  - host_port: 9090
-    container_port: 9090
-    protocol: udp
 
 volumes:
   - host_path: ./data
     container_path: /app/data
-  - host_path: ./config
-    container_path: /app/config
-    readonly: true
 
 env_vars:
   DATABASE_URL: postgres://localhost/mydb
-  API_KEY: secret123
 
 extra_options: |
   deploy:
@@ -116,25 +124,48 @@ extra_options: |
       condition: on-failure
 ```
 
+**Multi-service:**
+
+```yaml
+services:
+  - name: app
+    registry_image: registry.example.com/my-app
+    image_tag: latest
+    polled: true
+    ports:
+      - host_port: 8080
+        container_port: 80
+  - name: redis
+    registry_image: redis
+    image_tag: 7
+    polled: false
+
+env_vars:
+  DATABASE_URL: postgres://localhost/mydb
+```
+
 | Field | Required | Description |
 |-------|----------|-------------|
-| `registry_image` | yes | Container image (e.g. `registry.example.com/my-app`) |
+| `registry_image` | yes (single-service) | Container image (e.g. `registry.example.com/my-app`) |
 | `image_tag` | no | Image tag (default: `latest`) |
 | `ports` | no | Port mappings with `host_port`, `container_port`, optional `protocol` |
 | `volumes` | no | Bind mounts with `host_path`, `container_path`, optional `readonly` |
-| `env_vars` | no | Environment variables as key-value pairs |
+| `env_vars` | no | Environment variables as key-value pairs (shared across services) |
 | `extra_options` | no | Raw YAML fragment merged into the compose service block |
+| `services` | no | Array of services (replaces top-level `registry_image`/`ports`/etc.) |
 
-BBSit generates `compose.yaml` from the stack config — same as form mode. Health check, poll interval, and enabled/disabled are configured separately below the editor.
+Each entry in `services` supports: `name`, `registry_image`, `image_tag`, `polled`, `ports`, `volumes`, `extra_options`.
+
+BBSit generates `compose.yaml` from these fields. Health check, poll interval, and enabled/disabled are configured separately below the editor.
 
 ## Deploy Flow
 
-1. Polls container registry for new image digests
-2. Compares remote vs local running digest
-3. Writes `compose.override.yaml` with pinned digest
+1. Polls container registry for new image digests (per polled service)
+2. Compares remote vs local running digest for each service
+3. If any service has a new digest, writes `compose.override.yaml` with per-service pinned digests
 4. `docker compose pull && docker compose up -d`
-5. Health check (HTTP / TCP)
-6. Success → update state · Failure → rollback to previous digest
+5. Health checks — stack-level first, then per-service overrides (HTTP / TCP)
+6. Success → update state · Failure → atomic rollback (all services revert together)
 
 ## CLI
 

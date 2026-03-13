@@ -306,5 +306,72 @@ func (s *Server) validateAndDefaultProject(p *types.Project, isNew bool) error {
 	if p.StackPath == "" {
 		p.StackPath = fmt.Sprintf("%s/%s", s.stackRoot, p.ID)
 	}
+
+	// Backward compat: if Services is empty but legacy RegistryImage is set,
+	// auto-convert to a single-service array
+	if len(p.Services) == 0 && p.RegistryImage != "" {
+		p.Services = []types.ServiceConfig{{
+			Name:          p.ID,
+			RegistryImage: p.RegistryImage,
+			ImageTag:      p.ImageTag,
+			Polled:        true,
+			Ports:         p.Ports,
+			Volumes:       p.Volumes,
+			ExtraOptions:  p.ExtraOptions,
+		}}
+	}
+
+	// Backward compat: convert custom mode to form mode
+	if p.ConfigMode == types.ConfigModeCustom && p.CustomCompose != "" && len(p.Services) == 0 {
+		var sc struct {
+			RegistryImage string                `yaml:"registry_image"`
+			ImageTag      string                `yaml:"image_tag"`
+			Ports         []types.PortMapping    `yaml:"ports"`
+			Volumes       []types.VolumeMount    `yaml:"volumes"`
+			ExtraOptions  string                 `yaml:"extra_options"`
+			Services      []types.ServiceConfig  `yaml:"services"`
+			EnvVars       map[string]string      `yaml:"env_vars"`
+		}
+		if err := yaml.Unmarshal([]byte(p.CustomCompose), &sc); err == nil {
+			if len(sc.Services) > 0 {
+				p.Services = sc.Services
+			} else if sc.RegistryImage != "" {
+				tag := sc.ImageTag
+				if tag == "" {
+					tag = "latest"
+				}
+				p.Services = []types.ServiceConfig{{
+					Name:          p.ID,
+					RegistryImage: sc.RegistryImage,
+					ImageTag:      tag,
+					Polled:        true,
+					Ports:         sc.Ports,
+					Volumes:       sc.Volumes,
+					ExtraOptions:  sc.ExtraOptions,
+				}}
+			}
+			if len(sc.EnvVars) > 0 {
+				if p.EnvVars == nil {
+					p.EnvVars = map[string]string{}
+				}
+				for k, v := range sc.EnvVars {
+					p.EnvVars[k] = v
+				}
+			}
+		}
+		p.ConfigMode = types.ConfigModeForm
+		p.CustomCompose = ""
+	}
+
+	// Validate services
+	for i := range p.Services {
+		if p.Services[i].Name == "" {
+			return fmt.Errorf("service at index %d has no name", i)
+		}
+		if p.Services[i].ImageTag == "" {
+			p.Services[i].ImageTag = "latest"
+		}
+	}
+
 	return nil
 }

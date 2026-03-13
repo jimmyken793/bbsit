@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { useParams, Link, useNavigate } from 'react-router-dom'
-import { api, shortDigest, fmtTime, ApiError } from '../api'
+import { api, shortDigests, hasDigests, fmtTime, ApiError } from '../api'
 import { useWebSocket } from '../hooks/useWebSocket'
 import type { DeployEvent } from '../hooks/useWebSocket'
 import type { ProjectDetail } from '../types'
@@ -114,7 +114,7 @@ export default function ProjectDetailPage() {
         <button
           className="btn btn-outline btn-sm"
           onClick={() => action(() => api.projects.rollback(p.id), 'Rollback')}
-          disabled={isDeploying || !state.previous_digest}
+          disabled={isDeploying || !hasDigests(state.previous_digests)}
         >
           ↩ Rollback
         </button>
@@ -159,9 +159,9 @@ export default function ProjectDetailPage() {
         <div className="card">
           <div className="card-title">State</div>
           <div className="kv-row"><span className="key">Status</span><span className="val"><StatusBadge status={state.status} /></span></div>
-          <div className="kv-row"><span className="key">Current</span><span className="val digest">{shortDigest(state.current_digest)}</span></div>
-          <div className="kv-row"><span className="key">Desired</span><span className="val digest">{shortDigest(state.desired_digest)}</span></div>
-          <div className="kv-row"><span className="key">Previous</span><span className="val digest">{shortDigest(state.previous_digest)}</span></div>
+          <div className="kv-row"><span className="key">Current</span><span className="val digest">{shortDigests(state.current_digests)}</span></div>
+          <div className="kv-row"><span className="key">Desired</span><span className="val digest">{shortDigests(state.desired_digests)}</span></div>
+          <div className="kv-row"><span className="key">Previous</span><span className="val digest">{shortDigests(state.previous_digests)}</span></div>
           <div className="kv-row"><span className="key">Last check</span><span className="val">{fmtTime(state.last_check_at)}</span></div>
           <div className="kv-row"><span className="key">Last deploy</span><span className="val">{fmtTime(state.last_deploy_at)}</span></div>
           {state.last_error && (
@@ -171,11 +171,16 @@ export default function ProjectDetailPage() {
 
         <div className="card">
           <div className="card-title">Config</div>
-          <div className="kv-row"><span className="key">Mode</span><span className="val">{p.config_mode === 'custom' ? 'Stack config' : 'Form'}</span></div>
-          {p.config_mode === 'form' && <>
-            <div className="kv-row"><span className="key">Image</span><span className="val">{p.registry_image}:{p.image_tag || 'latest'}</span></div>
-            {p.ports?.length ? <div className="kv-row"><span className="key">Ports</span><span className="val">{p.ports.map(pt => `${pt.host_port}:${pt.container_port}`).join(', ')}</span></div> : null}
-          </>}
+          {p.services?.map(svc => (
+            <div key={svc.name} className="kv-row">
+              <span className="key">{svc.name}</span>
+              <span className="val">
+                {svc.registry_image}:{svc.image_tag || 'latest'}
+                {svc.polled ? ' (polled)' : ''}
+                {svc.ports?.length ? ` · ${svc.ports.map(pt => `${pt.host_port}:${pt.container_port}`).join(', ')}` : ''}
+              </span>
+            </div>
+          ))}
           <div className="kv-row"><span className="key">Stack path</span><span className="val">{p.stack_path}</span></div>
           <div className="kv-row"><span className="key">Health</span><span className="val">{p.health_type}{p.health_target ? ` · ${p.health_target}` : ''}</span></div>
           <div className="kv-row"><span className="key">Poll interval</span><span className="val">{p.poll_interval}s</span></div>
@@ -204,8 +209,8 @@ export default function ProjectDetailPage() {
                 <tr key={d.id}>
                   <td>{fmtTime(d.started_at)}</td>
                   <td>{d.trigger}</td>
-                  <td className="digest">{shortDigest(d.from_digest)}</td>
-                  <td className="digest">{shortDigest(d.to_digest)}</td>
+                  <td className="digest">{shortDigests(d.from_digests)}</td>
+                  <td className="digest">{shortDigests(d.to_digests)}</td>
                   <td><span className={`badge badge-${d.status}`}>{d.status}</span></td>
                   <td style={{ color: 'var(--danger)', fontSize: 12 }}>{d.error_message}</td>
                 </tr>

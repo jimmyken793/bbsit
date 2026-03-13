@@ -92,7 +92,7 @@ export default function DashboardPage() {
                 <h3>{p.display_name || p.id}</h3>
                 <div className="meta">
                   {p.id}
-                  {p.registry_image ? ` · ${p.registry_image}:${p.image_tag || 'latest'}` : ''}
+                  {p.services?.length ? ` · ${p.services[0].registry_image}:${p.services[0].image_tag || 'latest'}${p.services.length > 1 ? ` +${p.services.length - 1}` : ''}` : ''}
                 </div>
               </div>
               <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>

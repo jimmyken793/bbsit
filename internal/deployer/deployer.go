@@ -49,15 +49,16 @@ func (d *Deployer) emit(e Event) {
 }
 
 // Deploy executes a full deployment transaction for a project.
+// targetDigests maps service name -> target digest for each polled service.
 // Returns nil on success, error on failure (rollback will have been attempted).
-func (d *Deployer) Deploy(p *types.Project, targetDigest string, trigger types.DeployTrigger) error {
+func (d *Deployer) Deploy(p *types.Project, targetDigests map[string]string, trigger types.DeployTrigger) error {
 	mu := d.getLock(p.ID)
 	if !mu.TryLock() {
 		return fmt.Errorf("project %s: deployment already in progress", p.ID)
 	}
 	defer mu.Unlock()
 
-	log := d.log.With("project", p.ID, "target", ShortDigest(targetDigest))
+	log := d.log.With("project", p.ID)
 
 	// Get current state
 	state, err := d.db.GetState(p.ID)
@@ -67,12 +68,12 @@ func (d *Deployer) Deploy(p *types.Project, targetDigest string, trigger types.D
 
 	// Record deployment start
 	deploy := &types.Deployment{
-		ProjectID:  p.ID,
-		FromDigest: state.CurrentDigest,
-		ToDigest:   targetDigest,
-		Status:     types.DeployInProgress,
-		Trigger:    trigger,
-		StartedAt:  time.Now().UTC(),
+		ProjectID:   p.ID,
+		FromDigests: copyDigestMap(state.CurrentDigests),
+		ToDigests:   copyDigestMap(targetDigests),
+		Status:      types.DeployInProgress,
+		Trigger:     trigger,
+		StartedAt:   time.Now().UTC(),
 	}
 	deployID, err := d.db.InsertDeployment(deploy)
 	if err != nil {
@@ -81,19 +82,19 @@ func (d *Deployer) Deploy(p *types.Project, targetDigest string, trigger types.D
 
 	// Update state to deploying
 	state.Status = types.StatusDeploying
-	state.DesiredDigest = targetDigest
+	state.DesiredDigests = copyDigestMap(targetDigests)
 	d.db.UpdateState(state)
 	d.emit(Event{Type: EventStateChange, ProjectID: p.ID, Status: string(types.StatusDeploying)})
 
 	// Execute deployment
 	log.Info("starting deployment")
-	deployErr := d.executeDeploy(p, targetDigest, log)
+	deployErr := d.executeDeploy(p, targetDigests, log)
 
 	if deployErr == nil {
-		// Health check
+		// Health checks: stack-level default first, then per-service overrides
 		log.Info("running health check")
 		d.emit(Event{Type: EventStepStart, ProjectID: p.ID, Step: "health_check"})
-		deployErr = health.Check(p.HealthType, p.HealthTarget, 30*time.Second, 3)
+		deployErr = d.runHealthChecks(p)
 		if deployErr != nil {
 			d.emit(Event{Type: EventStepDone, ProjectID: p.ID, Step: "health_check", Error: true, Message: deployErr.Error()})
 		} else {
@@ -107,7 +108,7 @@ func (d *Deployer) Deploy(p *types.Project, targetDigest string, trigger types.D
 		d.db.FinishDeployment(deployID, types.DeployFailed, deployErr.Error())
 
 		d.emit(Event{Type: EventStepStart, ProjectID: p.ID, Step: "rollback"})
-		rollbackErr := d.executeRollback(p, state.CurrentDigest, log)
+		rollbackErr := d.executeRollback(p, state.CurrentDigests, log)
 		if rollbackErr != nil {
 			d.emit(Event{Type: EventStepDone, ProjectID: p.ID, Step: "rollback", Error: true, Message: rollbackErr.Error()})
 			log.Error("rollback also failed", "error", rollbackErr)
@@ -133,8 +134,8 @@ func (d *Deployer) Deploy(p *types.Project, targetDigest string, trigger types.D
 	d.db.FinishDeployment(deployID, types.DeploySuccess, "")
 
 	now := time.Now().UTC()
-	state.PreviousDigest = state.CurrentDigest
-	state.CurrentDigest = targetDigest
+	state.PreviousDigests = copyDigestMap(state.CurrentDigests)
+	state.CurrentDigests = copyDigestMap(targetDigests)
 	state.Status = types.StatusRunning
 	state.LastDeployAt = &now
 	state.LastSuccessAt = &now
@@ -147,12 +148,15 @@ func (d *Deployer) Deploy(p *types.Project, targetDigest string, trigger types.D
 	return nil
 }
 
-func (d *Deployer) executeDeploy(p *types.Project, digest string, log *slog.Logger) error {
+func (d *Deployer) executeDeploy(p *types.Project, digests map[string]string, log *slog.Logger) error {
 	logFn := func(line string, isErr bool) {
 		d.emit(Event{Type: EventLog, ProjectID: p.ID, Message: line, Error: isErr})
 	}
 
-	if err := WriteComposeFiles(p, ""); err != nil {
+	// Build image overrides: service name -> full image@digest ref
+	imageOverrides := buildImageOverrides(p, digests)
+
+	if err := WriteComposeFiles(p, imageOverrides); err != nil {
 		return fmt.Errorf("write compose files: %w", err)
 	}
 
@@ -175,22 +179,19 @@ func (d *Deployer) executeDeploy(p *types.Project, digest string, log *slog.Logg
 	return nil
 }
 
-func (d *Deployer) executeRollback(p *types.Project, previousDigest string, log *slog.Logger) error {
+func (d *Deployer) executeRollback(p *types.Project, prevDigests map[string]string, log *slog.Logger) error {
 	logFn := func(line string, isErr bool) {
 		d.emit(Event{Type: EventLog, ProjectID: p.ID, Message: line, Error: isErr})
 	}
 
-	if previousDigest == "" {
-		return fmt.Errorf("no previous digest to rollback to")
+	if len(prevDigests) == 0 {
+		return fmt.Errorf("no previous digests to rollback to")
 	}
 
-	log.Info("rolling back", "to", ShortDigest(previousDigest))
+	log.Info("rolling back")
 
-	imageRef := ""
-	if p.ConfigMode == types.ConfigModeForm {
-		imageRef = fmt.Sprintf("%s@%s", p.RegistryImage, previousDigest)
-	}
-	if err := WriteComposeFiles(p, imageRef); err != nil {
+	imageOverrides := buildImageOverrides(p, prevDigests)
+	if err := WriteComposeFiles(p, imageOverrides); err != nil {
 		return fmt.Errorf("write rollback compose: %w", err)
 	}
 
@@ -198,11 +199,47 @@ func (d *Deployer) executeRollback(p *types.Project, previousDigest string, log 
 		return fmt.Errorf("compose up rollback: %w", err)
 	}
 
-	if err := health.Check(p.HealthType, p.HealthTarget, 30*time.Second, 3); err != nil {
+	if err := d.runHealthChecks(p); err != nil {
 		return fmt.Errorf("health check after rollback: %w", err)
 	}
 
 	return nil
+}
+
+// runHealthChecks runs stack-level and per-service health checks.
+func (d *Deployer) runHealthChecks(p *types.Project) error {
+	// Stack-level health check
+	if p.HealthType != types.HealthNone && p.HealthType != "" {
+		if err := health.Check(p.HealthType, p.HealthTarget, 30*time.Second, 3); err != nil {
+			return err
+		}
+	}
+	// Per-service health checks
+	for _, svc := range p.Services {
+		if svc.HealthType != "" && svc.HealthType != types.HealthNone {
+			if err := health.Check(svc.HealthType, svc.HealthTarget, 30*time.Second, 3); err != nil {
+				return fmt.Errorf("service %s health check: %w", svc.Name, err)
+			}
+		}
+	}
+	return nil
+}
+
+// buildImageOverrides constructs the service -> image@digest map for compose override.
+func buildImageOverrides(p *types.Project, digests map[string]string) map[string]string {
+	if len(digests) == 0 {
+		return nil
+	}
+	overrides := make(map[string]string)
+	for _, svc := range p.Services {
+		if digest, ok := digests[svc.Name]; ok && digest != "" {
+			overrides[svc.Name] = fmt.Sprintf("%s@%s", svc.RegistryImage, digest)
+		}
+	}
+	if len(overrides) == 0 {
+		return nil
+	}
+	return overrides
 }
 
 // ManualRollback allows rolling back via Web UI / CLI
@@ -211,10 +248,10 @@ func (d *Deployer) ManualRollback(p *types.Project) error {
 	if err != nil {
 		return err
 	}
-	if state.PreviousDigest == "" {
+	if len(state.PreviousDigests) == 0 {
 		return fmt.Errorf("no previous version to rollback to")
 	}
-	return d.Deploy(p, state.PreviousDigest, types.TriggerManual)
+	return d.Deploy(p, state.PreviousDigests, types.TriggerManual)
 }
 
 // Stop stops a project's compose stack
@@ -232,7 +269,7 @@ func (d *Deployer) Stop(p *types.Project) error {
 
 // Start starts a project's compose stack with current config
 func (d *Deployer) Start(p *types.Project) error {
-	if err := WriteComposeFiles(p, ""); err != nil {
+	if err := WriteComposeFiles(p, nil); err != nil {
 		return err
 	}
 	if err := composeCmd(p.StackPath, nil, "up", "-d"); err != nil {
@@ -346,4 +383,15 @@ func ShortDigest(d string) string {
 		return d[:19]
 	}
 	return d
+}
+
+func copyDigestMap(m map[string]string) map[string]string {
+	if m == nil {
+		return map[string]string{}
+	}
+	c := make(map[string]string, len(m))
+	for k, v := range m {
+		c[k] = v
+	}
+	return c
 }

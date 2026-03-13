@@ -73,6 +73,18 @@ export function shortDigest(d: string): string {
   return d.length > 19 ? d.slice(0, 19) : d
 }
 
+export function shortDigests(m: Record<string, string> | undefined | null): string {
+  if (!m || Object.keys(m).length === 0) return '—'
+  return Object.entries(m)
+    .map(([svc, d]) => `${svc}: ${shortDigest(d)}`)
+    .join(', ')
+}
+
+export function hasDigests(m: Record<string, string> | undefined | null): boolean {
+  if (!m) return false
+  return Object.values(m).some(v => v !== '')
+}
+
 export function fmtTime(t?: string | null): string {
   if (!t) return '—'
   return new Date(t).toLocaleString()

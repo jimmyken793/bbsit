@@ -2,6 +2,7 @@ package scheduler
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"sync"
 	"time"
@@ -84,8 +85,7 @@ func (s *Scheduler) reconcileAll(ctx context.Context, trigger types.DeployTrigge
 		if !p.Enabled {
 			continue
 		}
-		// Only form-mode projects with a registry image can be auto-polled
-		if p.ConfigMode != types.ConfigModeForm || p.RegistryImage == "" {
+		if len(p.PolledServices()) == 0 {
 			continue
 		}
 
@@ -115,25 +115,43 @@ func (s *Scheduler) reconcileOne(ctx context.Context, p *types.Project, state *t
 	state.LastCheckAt = &now
 	s.db.UpdateState(state)
 
-	// Get remote digest
-	tag := p.ImageTag
-	if tag == "" {
-		tag = "latest"
+	// Initialize desired digests map if nil
+	if state.DesiredDigests == nil {
+		state.DesiredDigests = make(map[string]string)
 	}
-	remoteDigest, err := registry.GetRemoteDigest(p.RegistryImage, tag)
-	if err != nil {
-		log.Error("check remote digest", "error", err)
-		state.LastError = err.Error()
-		s.db.UpdateState(state)
-		return
+	if state.CurrentDigests == nil {
+		state.CurrentDigests = make(map[string]string)
 	}
 
-	state.DesiredDigest = remoteDigest
+	// Poll each service with Polled: true
+	changed := false
+	for _, svc := range p.PolledServices() {
+		tag := svc.ImageTag
+		if tag == "" {
+			tag = "latest"
+		}
+		remoteDigest, err := registry.GetRemoteDigest(svc.RegistryImage, tag)
+		if err != nil {
+			log.Error("check remote digest", "service", svc.Name, "error", err)
+			state.LastError = fmt.Sprintf("service %s: %v", svc.Name, err)
+			s.db.UpdateState(state)
+			return
+		}
+
+		state.DesiredDigests[svc.Name] = remoteDigest
+		if remoteDigest != state.CurrentDigests[svc.Name] {
+			changed = true
+			log.Info("new version detected",
+				"service", svc.Name,
+				"current", deployer.ShortDigest(state.CurrentDigests[svc.Name]),
+				"new", deployer.ShortDigest(remoteDigest))
+		}
+	}
+
 	s.db.UpdateState(state)
 
-	// Compare
-	if remoteDigest == state.CurrentDigest {
-		log.Debug("up to date", "digest", deployer.ShortDigest(remoteDigest))
+	if !changed {
+		log.Debug("all services up to date")
 		return
 	}
 
@@ -142,12 +160,8 @@ func (s *Scheduler) reconcileOne(ctx context.Context, p *types.Project, state *t
 		return
 	}
 
-	// New version detected — deploy
-	log.Info("new version detected",
-		"current", deployer.ShortDigest(state.CurrentDigest),
-		"new", deployer.ShortDigest(remoteDigest))
-
-	if err := s.deployer.Deploy(p, remoteDigest, trigger); err != nil {
+	// Any service changed → full stack redeploy with all desired digests
+	if err := s.deployer.Deploy(p, state.DesiredDigests, trigger); err != nil {
 		log.Error("deployment failed", "error", err)
 	}
 }

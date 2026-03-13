@@ -11,9 +11,12 @@ import (
 
 func baseProject() *types.Project {
 	return &types.Project{
-		ID:            "svc",
-		RegistryImage: "registry.example.com/svc",
-		ImageTag:      "latest",
+		ID: "svc",
+		Services: []types.ServiceConfig{{
+			Name:          "svc",
+			RegistryImage: "registry.example.com/svc",
+			ImageTag:      "latest",
+		}},
 	}
 }
 
@@ -34,7 +37,7 @@ func TestGenerateFormCompose_Basic(t *testing.T) {
 
 func TestGenerateFormCompose_TCPPort(t *testing.T) {
 	p := baseProject()
-	p.Ports = []types.PortMapping{
+	p.Services[0].Ports = []types.PortMapping{
 		{HostPort: 8080, ContainerPort: 80},
 		{HostPort: 9090, ContainerPort: 9090, Protocol: "tcp"},
 	}
@@ -50,7 +53,7 @@ func TestGenerateFormCompose_TCPPort(t *testing.T) {
 
 func TestGenerateFormCompose_UDPPort(t *testing.T) {
 	p := baseProject()
-	p.Ports = []types.PortMapping{
+	p.Services[0].Ports = []types.PortMapping{
 		{HostPort: 5353, ContainerPort: 5353, Protocol: "udp"},
 	}
 	got := generateFormCompose(p)
@@ -62,7 +65,7 @@ func TestGenerateFormCompose_UDPPort(t *testing.T) {
 
 func TestGenerateFormCompose_Volumes(t *testing.T) {
 	p := baseProject()
-	p.Volumes = []types.VolumeMount{
+	p.Services[0].Volumes = []types.VolumeMount{
 		{HostPath: "/data", ContainerPath: "/app/data"},
 		{HostPath: "/cfg", ContainerPath: "/app/cfg", ReadOnly: true},
 	}
@@ -79,7 +82,7 @@ func TestGenerateFormCompose_Volumes(t *testing.T) {
 func TestGenerateFormCompose_VolumesRelativePath(t *testing.T) {
 	p := baseProject()
 	p.StackPath = "/opt/stacks/svc"
-	p.Volumes = []types.VolumeMount{
+	p.Services[0].Volumes = []types.VolumeMount{
 		{HostPath: "./data", ContainerPath: "/app/data"},
 		{HostPath: "config", ContainerPath: "/app/config", ReadOnly: true},
 	}
@@ -116,7 +119,7 @@ func TestGenerateFormCompose_NoEnvFile(t *testing.T) {
 
 func TestGenerateFormCompose_BindHost(t *testing.T) {
 	p := baseProject()
-	p.Ports = []types.PortMapping{{HostPort: 8080, ContainerPort: 80}}
+	p.Services[0].Ports = []types.PortMapping{{HostPort: 8080, ContainerPort: 80}}
 
 	// Default (empty) should use 127.0.0.1
 	got := generateFormCompose(p)
@@ -141,7 +144,7 @@ func TestGenerateFormCompose_BindHost(t *testing.T) {
 
 func TestGenerateFormCompose_ExtraOptions(t *testing.T) {
 	p := baseProject()
-	p.ExtraOptions = "network_mode: host\nprivileged: true"
+	p.Services[0].ExtraOptions = "network_mode: host\nprivileged: true"
 	got := generateFormCompose(p)
 
 	if !strings.Contains(got, "    network_mode: host") {
@@ -153,7 +156,9 @@ func TestGenerateFormCompose_ExtraOptions(t *testing.T) {
 }
 
 func TestGenerateDigestOverride(t *testing.T) {
-	got := generateDigestOverride("webui", "sha256:abc123def456")
+	got := generateDigestOverride(map[string]string{
+		"webui": "sha256:abc123def456",
+	})
 
 	for _, want := range []string{
 		"services:",
@@ -166,20 +171,70 @@ func TestGenerateDigestOverride(t *testing.T) {
 	}
 }
 
+func TestGenerateDigestOverride_MultiService(t *testing.T) {
+	got := generateDigestOverride(map[string]string{
+		"app":   "registry.example.com/app@sha256:aaa111",
+		"redis": "redis@sha256:bbb222",
+	})
+
+	if !strings.Contains(got, "  app:") {
+		t.Errorf("missing app service, got:\n%s", got)
+	}
+	if !strings.Contains(got, "  redis:") {
+		t.Errorf("missing redis service, got:\n%s", got)
+	}
+}
+
+func TestGenerateFormCompose_MultiService(t *testing.T) {
+	p := &types.Project{
+		ID: "stack",
+		Services: []types.ServiceConfig{
+			{
+				Name:          "app",
+				RegistryImage: "registry.example.com/app",
+				ImageTag:      "latest",
+				Ports:         []types.PortMapping{{HostPort: 8080, ContainerPort: 80}},
+			},
+			{
+				Name:          "redis",
+				RegistryImage: "redis",
+				ImageTag:      "7",
+			},
+		},
+	}
+
+	got := generateFormCompose(p)
+
+	for _, want := range []string{
+		"  app:",
+		"    image: registry.example.com/app:latest",
+		"  redis:",
+		"    image: redis:7",
+		`"127.0.0.1:8080:80"`,
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("missing %q in multi-service output:\n%s", want, got)
+		}
+	}
+}
+
 func TestWriteComposeFiles_FormMode(t *testing.T) {
 	dir := t.TempDir()
 	p := &types.Project{
-		ID:            "test-svc",
-		ConfigMode:    types.ConfigModeForm,
-		RegistryImage: "registry.example.com/app",
-		ImageTag:      "latest",
-		StackPath:     dir,
-		Ports:         []types.PortMapping{{HostPort: 8080, ContainerPort: 80}},
-		Volumes:       []types.VolumeMount{{HostPath: "./data", ContainerPath: "/app/data"}},
-		EnvVars:       map[string]string{"KEY": "val"},
+		ID:         "test-svc",
+		ConfigMode: types.ConfigModeForm,
+		StackPath:  dir,
+		Services: []types.ServiceConfig{{
+			Name:          "test-svc",
+			RegistryImage: "registry.example.com/app",
+			ImageTag:      "latest",
+			Ports:         []types.PortMapping{{HostPort: 8080, ContainerPort: 80}},
+			Volumes:       []types.VolumeMount{{HostPath: "./data", ContainerPath: "/app/data"}},
+		}},
+		EnvVars: map[string]string{"KEY": "val"},
 	}
 
-	if err := WriteComposeFiles(p, ""); err != nil {
+	if err := WriteComposeFiles(p, nil); err != nil {
 		t.Fatalf("WriteComposeFiles: %v", err)
 	}
 
@@ -215,14 +270,18 @@ func TestWriteComposeFiles_FormMode(t *testing.T) {
 func TestWriteComposeFiles_WithDigest(t *testing.T) {
 	dir := t.TempDir()
 	p := &types.Project{
-		ID:            "digest-svc",
-		ConfigMode:    types.ConfigModeForm,
-		RegistryImage: "registry.example.com/app",
-		ImageTag:      "latest",
-		StackPath:     dir,
+		ID:         "digest-svc",
+		ConfigMode: types.ConfigModeForm,
+		StackPath:  dir,
+		Services: []types.ServiceConfig{{
+			Name:          "digest-svc",
+			RegistryImage: "registry.example.com/app",
+			ImageTag:      "latest",
+		}},
 	}
 
-	if err := WriteComposeFiles(p, "sha256:abc123"); err != nil {
+	overrides := map[string]string{"digest-svc": "sha256:abc123"}
+	if err := WriteComposeFiles(p, overrides); err != nil {
 		t.Fatalf("WriteComposeFiles: %v", err)
 	}
 
@@ -251,7 +310,7 @@ env_vars:
 `,
 	}
 
-	if err := WriteComposeFiles(p, ""); err != nil {
+	if err := WriteComposeFiles(p, nil); err != nil {
 		t.Fatalf("WriteComposeFiles: %v", err)
 	}
 
@@ -277,9 +336,56 @@ func TestWriteComposeFiles_CustomMode_InvalidYAML(t *testing.T) {
 		CustomCompose: "registry_image:\n  - not: a string\n  - invalid: structure",
 	}
 
-	err := WriteComposeFiles(p, "")
+	err := WriteComposeFiles(p, nil)
 	if err == nil {
 		t.Fatal("expected error for invalid YAML")
+	}
+}
+
+func TestWriteComposeFiles_MultiService(t *testing.T) {
+	dir := t.TempDir()
+	p := &types.Project{
+		ID:         "multi",
+		ConfigMode: types.ConfigModeForm,
+		StackPath:  dir,
+		Services: []types.ServiceConfig{
+			{
+				Name:          "app",
+				RegistryImage: "registry.example.com/app",
+				ImageTag:      "latest",
+				Ports:         []types.PortMapping{{HostPort: 8080, ContainerPort: 80}},
+			},
+			{
+				Name:          "db",
+				RegistryImage: "postgres",
+				ImageTag:      "16",
+				Volumes:       []types.VolumeMount{{HostPath: "./pgdata", ContainerPath: "/var/lib/postgresql/data"}},
+			},
+		},
+	}
+
+	if err := WriteComposeFiles(p, nil); err != nil {
+		t.Fatalf("WriteComposeFiles: %v", err)
+	}
+
+	compose, err := os.ReadFile(filepath.Join(dir, "compose.yaml"))
+	if err != nil {
+		t.Fatalf("read compose.yaml: %v", err)
+	}
+	content := string(compose)
+	if !strings.Contains(content, "  app:") {
+		t.Errorf("missing app service, got:\n%s", content)
+	}
+	if !strings.Contains(content, "  db:") {
+		t.Errorf("missing db service, got:\n%s", content)
+	}
+	if !strings.Contains(content, "postgres:16") {
+		t.Errorf("missing postgres image, got:\n%s", content)
+	}
+
+	// Volume dir for db should be created
+	if _, err := os.Stat(filepath.Join(dir, "pgdata")); os.IsNotExist(err) {
+		t.Error("bind mount directory for db not created")
 	}
 }
 
@@ -288,10 +394,10 @@ func TestWriteEnvFile_Escaping(t *testing.T) {
 	path := filepath.Join(dir, ".env")
 
 	vars := map[string]string{
-		"SIMPLE":  "value",
-		"SPACED":  "has space",
-		"QUOTED":  `has "quote`,
-		"DOLLAR":  "has$dollar",
+		"SIMPLE": "value",
+		"SPACED": "has space",
+		"QUOTED": `has "quote`,
+		"DOLLAR": "has$dollar",
 	}
 	if err := writeEnvFile(path, vars); err != nil {
 		t.Fatalf("writeEnvFile: %v", err)

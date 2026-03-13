@@ -20,9 +20,15 @@ func openTestDB(t *testing.T) *DB {
 
 func sampleProject(id string) *types.Project {
 	return &types.Project{
-		ID:            id,
-		DisplayName:   "Test Project",
-		ConfigMode:    types.ConfigModeForm,
+		ID:          id,
+		DisplayName: "Test Project",
+		ConfigMode:  types.ConfigModeForm,
+		Services: []types.ServiceConfig{{
+			Name:          id,
+			RegistryImage: "registry.example.com/app",
+			ImageTag:      "latest",
+			Polled:        true,
+		}},
 		RegistryImage: "registry.example.com/app",
 		ImageTag:      "latest",
 		StackPath:     "/opt/stacks/" + id,
@@ -179,8 +185,8 @@ func TestGetState_Initial(t *testing.T) {
 	if state.ProjectID != "proj-st" {
 		t.Errorf("ProjectID = %q, want proj-st", state.ProjectID)
 	}
-	if state.CurrentDigest != "" {
-		t.Errorf("CurrentDigest = %q, want empty", state.CurrentDigest)
+	if len(state.CurrentDigests) != 0 {
+		t.Errorf("CurrentDigests = %v, want empty", state.CurrentDigests)
 	}
 	if state.LastDeployAt != nil {
 		t.Error("LastDeployAt should be nil initially")
@@ -196,11 +202,11 @@ func TestUpdateState(t *testing.T) {
 
 	now := time.Now().UTC().Truncate(time.Second)
 	state := &types.ProjectState{
-		ProjectID:      "proj-ust",
-		CurrentDigest:  "sha256:abc123",
-		PreviousDigest: "sha256:def456",
-		Status:         types.StatusRunning,
-		LastDeployAt:   &now,
+		ProjectID:       "proj-ust",
+		CurrentDigests:  map[string]string{"app": "sha256:abc123"},
+		PreviousDigests: map[string]string{"app": "sha256:def456"},
+		Status:          types.StatusRunning,
+		LastDeployAt:    &now,
 	}
 	if err := db.UpdateState(state); err != nil {
 		t.Fatalf("UpdateState: %v", err)
@@ -210,17 +216,59 @@ func TestUpdateState(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetState after update: %v", err)
 	}
-	if got.CurrentDigest != "sha256:abc123" {
-		t.Errorf("CurrentDigest = %q, want sha256:abc123", got.CurrentDigest)
+	if got.CurrentDigests["app"] != "sha256:abc123" {
+		t.Errorf("CurrentDigests[app] = %q, want sha256:abc123", got.CurrentDigests["app"])
 	}
-	if got.PreviousDigest != "sha256:def456" {
-		t.Errorf("PreviousDigest = %q, want sha256:def456", got.PreviousDigest)
+	if got.PreviousDigests["app"] != "sha256:def456" {
+		t.Errorf("PreviousDigests[app] = %q, want sha256:def456", got.PreviousDigests["app"])
 	}
 	if got.Status != types.StatusRunning {
 		t.Errorf("Status = %q, want running", got.Status)
 	}
 	if got.LastDeployAt == nil {
 		t.Error("LastDeployAt = nil, want non-nil")
+	}
+}
+
+func TestUpdateState_MultiServiceDigests(t *testing.T) {
+	db := openTestDB(t)
+
+	if err := db.CreateProject(sampleProject("proj-multi")); err != nil {
+		t.Fatalf("CreateProject: %v", err)
+	}
+
+	state := &types.ProjectState{
+		ProjectID: "proj-multi",
+		CurrentDigests: map[string]string{
+			"app":   "sha256:aaa111",
+			"redis": "sha256:bbb222",
+		},
+		PreviousDigests: map[string]string{
+			"app":   "sha256:old111",
+			"redis": "sha256:old222",
+		},
+		DesiredDigests: map[string]string{
+			"app":   "sha256:new111",
+			"redis": "sha256:bbb222",
+		},
+		Status: types.StatusRunning,
+	}
+	if err := db.UpdateState(state); err != nil {
+		t.Fatalf("UpdateState: %v", err)
+	}
+
+	got, err := db.GetState("proj-multi")
+	if err != nil {
+		t.Fatalf("GetState: %v", err)
+	}
+	if got.CurrentDigests["app"] != "sha256:aaa111" {
+		t.Errorf("CurrentDigests[app] = %q", got.CurrentDigests["app"])
+	}
+	if got.CurrentDigests["redis"] != "sha256:bbb222" {
+		t.Errorf("CurrentDigests[redis] = %q", got.CurrentDigests["redis"])
+	}
+	if got.DesiredDigests["app"] != "sha256:new111" {
+		t.Errorf("DesiredDigests[app] = %q", got.DesiredDigests["app"])
 	}
 }
 
@@ -314,12 +362,12 @@ func TestInsertAndFinishDeployment(t *testing.T) {
 	}
 
 	d := &types.Deployment{
-		ProjectID:  "proj-dep",
-		FromDigest: "sha256:old",
-		ToDigest:   "sha256:new",
-		Status:     types.DeployInProgress,
-		Trigger:    types.TriggerPoll,
-		StartedAt:  time.Now().UTC(),
+		ProjectID:   "proj-dep",
+		FromDigests: map[string]string{"app": "sha256:old"},
+		ToDigests:   map[string]string{"app": "sha256:new"},
+		Status:      types.DeployInProgress,
+		Trigger:     types.TriggerPoll,
+		StartedAt:   time.Now().UTC(),
 	}
 
 	id, err := db.InsertDeployment(d)
@@ -346,6 +394,12 @@ func TestInsertAndFinishDeployment(t *testing.T) {
 	}
 	if deployments[0].EndedAt == nil {
 		t.Error("EndedAt = nil after FinishDeployment")
+	}
+	if deployments[0].FromDigests["app"] != "sha256:old" {
+		t.Errorf("FromDigests[app] = %q, want sha256:old", deployments[0].FromDigests["app"])
+	}
+	if deployments[0].ToDigests["app"] != "sha256:new" {
+		t.Errorf("ToDigests[app] = %q, want sha256:new", deployments[0].ToDigests["app"])
 	}
 }
 
@@ -419,6 +473,49 @@ func TestSetAndGetPassword(t *testing.T) {
 	hash, _ = db.GetPasswordHash()
 	if hash != "$2b$10$newhash" {
 		t.Errorf("updated hash = %q, want $2b$10$newhash", hash)
+	}
+}
+
+func TestProjectWithServices(t *testing.T) {
+	db := openTestDB(t)
+	p := &types.Project{
+		ID:          "proj-svc",
+		DisplayName: "Multi Service",
+		ConfigMode:  types.ConfigModeForm,
+		Services: []types.ServiceConfig{
+			{Name: "app", RegistryImage: "registry.example.com/app", ImageTag: "latest", Polled: true,
+				Ports: []types.PortMapping{{HostPort: 8080, ContainerPort: 80}}},
+			{Name: "redis", RegistryImage: "redis", ImageTag: "7", Polled: false},
+		},
+		StackPath:    "/opt/stacks/proj-svc",
+		HealthType:   types.HealthHTTP,
+		HealthTarget: "http://127.0.0.1:8080/healthz",
+		PollInterval: 300,
+		Enabled:      true,
+	}
+
+	if err := db.CreateProject(p); err != nil {
+		t.Fatalf("CreateProject: %v", err)
+	}
+
+	got, err := db.GetProject("proj-svc")
+	if err != nil {
+		t.Fatalf("GetProject: %v", err)
+	}
+	if len(got.Services) != 2 {
+		t.Fatalf("Services len = %d, want 2", len(got.Services))
+	}
+	if got.Services[0].Name != "app" || got.Services[0].RegistryImage != "registry.example.com/app" {
+		t.Errorf("Services[0] = %+v", got.Services[0])
+	}
+	if !got.Services[0].Polled {
+		t.Error("Services[0].Polled should be true")
+	}
+	if got.Services[1].Name != "redis" || got.Services[1].Polled {
+		t.Errorf("Services[1] = %+v", got.Services[1])
+	}
+	if len(got.Services[0].Ports) != 1 || got.Services[0].Ports[0].HostPort != 8080 {
+		t.Errorf("Services[0].Ports = %v", got.Services[0].Ports)
 	}
 }
 
