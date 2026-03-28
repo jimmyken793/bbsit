@@ -311,7 +311,7 @@ export default function ProjectFormPage() {
                       <label style={{ fontWeight: 600, fontSize: 13 }}>Ports</label>
                       {(svc.ports || []).map((pt, pi) => (
                         <div key={pi} className="list-row">
-                          <input type="number" className="form-control" placeholder="Host" value={pt.host_port || ''} onChange={e => updateServicePort(si, pi, { host_port: +e.target.value })} />
+                          <input type="text" className="form-control" placeholder="8080 or 127.0.0.1:8080" value={pt.host_port || ''} onChange={e => updateServicePort(si, pi, { host_port: e.target.value })} />
                           <span>:</span>
                           <input type="number" className="form-control" placeholder="Container" value={pt.container_port || ''} onChange={e => updateServicePort(si, pi, { container_port: +e.target.value })} />
                           <select className="form-control" style={{ maxWidth: 80 }} value={pt.protocol || 'tcp'} onChange={e => updateServicePort(si, pi, { protocol: e.target.value })}>
@@ -321,7 +321,7 @@ export default function ProjectFormPage() {
                           <button type="button" className="btn btn-outline btn-sm" onClick={() => updateService(si, { ports: (svc.ports || []).filter((_, j) => j !== pi) })}>✕</button>
                         </div>
                       ))}
-                      <button type="button" className="btn btn-outline btn-sm" onClick={() => updateService(si, { ports: [...(svc.ports || []), { host_port: 0, container_port: 0 }] })}>
+                      <button type="button" className="btn btn-outline btn-sm" onClick={() => updateService(si, { ports: [...(svc.ports || []), { host_port: '', container_port: 0 }] })}>
                         + Add port
                       </button>
                     </div>

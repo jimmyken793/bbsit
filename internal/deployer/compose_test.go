@@ -38,8 +38,8 @@ func TestGenerateFormCompose_Basic(t *testing.T) {
 func TestGenerateFormCompose_TCPPort(t *testing.T) {
 	p := baseProject()
 	p.Services[0].Ports = []types.PortMapping{
-		{HostPort: 8080, ContainerPort: 80},
-		{HostPort: 9090, ContainerPort: 9090, Protocol: "tcp"},
+		{HostPort: "8080", ContainerPort: 80},
+		{HostPort: "9090", ContainerPort: 9090, Protocol: "tcp"},
 	}
 	got := generateFormCompose(p)
 
@@ -54,7 +54,7 @@ func TestGenerateFormCompose_TCPPort(t *testing.T) {
 func TestGenerateFormCompose_UDPPort(t *testing.T) {
 	p := baseProject()
 	p.Services[0].Ports = []types.PortMapping{
-		{HostPort: 5353, ContainerPort: 5353, Protocol: "udp"},
+		{HostPort: "5353", ContainerPort: 5353, Protocol: "udp"},
 	}
 	got := generateFormCompose(p)
 
@@ -119,7 +119,7 @@ func TestGenerateFormCompose_NoEnvFile(t *testing.T) {
 
 func TestGenerateFormCompose_BindHost(t *testing.T) {
 	p := baseProject()
-	p.Services[0].Ports = []types.PortMapping{{HostPort: 8080, ContainerPort: 80}}
+	p.Services[0].Ports = []types.PortMapping{{HostPort: "8080", ContainerPort: 80}}
 
 	// Default (empty) should use 127.0.0.1
 	got := generateFormCompose(p)
@@ -139,6 +139,38 @@ func TestGenerateFormCompose_BindHost(t *testing.T) {
 	got = generateFormCompose(p)
 	if !strings.Contains(got, `"127.0.0.1:8080:80"`) {
 		t.Errorf("bind_host 127.0.0.1 not applied, got:\n%s", got)
+	}
+}
+
+func TestGenerateFormCompose_HostPortWithBindAddr(t *testing.T) {
+	p := baseProject()
+	p.Services[0].Ports = []types.PortMapping{
+		{HostPort: "0.0.0.0:8080", ContainerPort: 80},
+	}
+	got := generateFormCompose(p)
+
+	// Per-port bind address should override project-level default
+	if !strings.Contains(got, `"0.0.0.0:8080:80"`) {
+		t.Errorf("per-port bind addr not applied, got:\n%s", got)
+	}
+}
+
+func TestGenerateFormCompose_HostPortWithLocalhostBindAddr(t *testing.T) {
+	p := baseProject()
+	p.BindHost = "0.0.0.0" // project-level says expose
+	p.Services[0].Ports = []types.PortMapping{
+		{HostPort: "localhost:9090", ContainerPort: 9090},
+		{HostPort: "3000", ContainerPort: 3000},
+	}
+	got := generateFormCompose(p)
+
+	// Per-port "localhost" should override project-level "0.0.0.0"
+	if !strings.Contains(got, `"localhost:9090:9090"`) {
+		t.Errorf("per-port localhost not applied, got:\n%s", got)
+	}
+	// Port without bind addr should use project-level
+	if !strings.Contains(got, `"0.0.0.0:3000:3000"`) {
+		t.Errorf("project-level bind not applied to plain port, got:\n%s", got)
 	}
 }
 
@@ -193,7 +225,7 @@ func TestGenerateFormCompose_MultiService(t *testing.T) {
 				Name:          "app",
 				RegistryImage: "registry.example.com/app",
 				ImageTag:      "latest",
-				Ports:         []types.PortMapping{{HostPort: 8080, ContainerPort: 80}},
+				Ports:         []types.PortMapping{{HostPort: "8080", ContainerPort: 80}},
 			},
 			{
 				Name:          "redis",
@@ -228,7 +260,7 @@ func TestWriteComposeFiles_FormMode(t *testing.T) {
 			Name:          "test-svc",
 			RegistryImage: "registry.example.com/app",
 			ImageTag:      "latest",
-			Ports:         []types.PortMapping{{HostPort: 8080, ContainerPort: 80}},
+			Ports:         []types.PortMapping{{HostPort: "8080", ContainerPort: 80}},
 			Volumes:       []types.VolumeMount{{HostPath: "./data", ContainerPath: "/app/data"}},
 		}},
 		EnvVars: map[string]string{"KEY": "val"},
@@ -353,7 +385,7 @@ func TestWriteComposeFiles_MultiService(t *testing.T) {
 				Name:          "app",
 				RegistryImage: "registry.example.com/app",
 				ImageTag:      "latest",
-				Ports:         []types.PortMapping{{HostPort: 8080, ContainerPort: 80}},
+				Ports:         []types.PortMapping{{HostPort: "8080", ContainerPort: 80}},
 			},
 			{
 				Name:          "db",

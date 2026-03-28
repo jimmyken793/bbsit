@@ -5,7 +5,7 @@ export type DeployStatus = 'success' | 'failed' | 'rolled_back' | 'in_progress'
 export type DeployTrigger = 'poll' | 'manual' | 'startup'
 
 export interface PortMapping {
-  host_port: number
+  host_port: string | number // e.g. 8080, "8080", "127.0.0.1:8080", "localhost:8080"
   container_port: number
   protocol?: string
 }

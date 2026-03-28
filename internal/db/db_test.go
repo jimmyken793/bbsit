@@ -145,7 +145,7 @@ func TestProjectWithPortsAndVolumes(t *testing.T) {
 	db := openTestDB(t)
 	p := sampleProject("proj-pv")
 	p.Ports = []types.PortMapping{
-		{HostPort: 8080, ContainerPort: 80, Protocol: "tcp"},
+		{HostPort: "8080", ContainerPort: 80, Protocol: "tcp"},
 	}
 	p.Volumes = []types.VolumeMount{
 		{HostPath: "/data", ContainerPath: "/app/data", ReadOnly: false},
@@ -160,7 +160,7 @@ func TestProjectWithPortsAndVolumes(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetProject: %v", err)
 	}
-	if len(got.Ports) != 1 || got.Ports[0].HostPort != 8080 {
+	if len(got.Ports) != 1 || got.Ports[0].HostPort != "8080" {
 		t.Errorf("Ports = %v, want [{8080 80 tcp}]", got.Ports)
 	}
 	if len(got.Volumes) != 1 || got.Volumes[0].HostPath != "/data" {
@@ -484,7 +484,7 @@ func TestProjectWithServices(t *testing.T) {
 		ConfigMode:  types.ConfigModeForm,
 		Services: []types.ServiceConfig{
 			{Name: "app", RegistryImage: "registry.example.com/app", ImageTag: "latest", Polled: true,
-				Ports: []types.PortMapping{{HostPort: 8080, ContainerPort: 80}}},
+				Ports: []types.PortMapping{{HostPort: "8080", ContainerPort: 80}}},
 			{Name: "redis", RegistryImage: "redis", ImageTag: "7", Polled: false},
 		},
 		StackPath:    "/opt/stacks/proj-svc",
@@ -514,7 +514,7 @@ func TestProjectWithServices(t *testing.T) {
 	if got.Services[1].Name != "redis" || got.Services[1].Polled {
 		t.Errorf("Services[1] = %+v", got.Services[1])
 	}
-	if len(got.Services[0].Ports) != 1 || got.Services[0].Ports[0].HostPort != 8080 {
+	if len(got.Services[0].Ports) != 1 || got.Services[0].Ports[0].HostPort != "8080" {
 		t.Errorf("Services[0].Ports = %v", got.Services[0].Ports)
 	}
 }

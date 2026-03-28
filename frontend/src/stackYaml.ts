@@ -8,14 +8,14 @@ interface StackConfigYaml {
     image_tag: string
     polled: boolean
     platform?: string
-    ports?: Array<{ host_port: number; container_port: number; protocol?: string }>
+    ports?: Array<{ host_port: string | number; container_port: number; protocol?: string }>
     volumes?: Array<{ host_path: string; container_path: string; readonly?: boolean }>
     extra_options?: string
   }>
   registry_image?: string
   image_tag?: string
   platform?: string
-  ports?: Array<{ host_port: number; container_port: number; protocol?: string }>
+  ports?: Array<{ host_port: string | number; container_port: number; protocol?: string }>
   volumes?: Array<{ host_path: string; container_path: string; readonly?: boolean }>
   extra_options?: string
   env_vars?: Record<string, string>

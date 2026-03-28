@@ -110,7 +110,7 @@ image_tag: latest
 platform: linux/amd64
 
 ports:
-  - host_port: 8080
+  - host_port: "127.0.0.1:8080"
     container_port: 80
 
 volumes:
@@ -152,7 +152,7 @@ env_vars:
 | `registry_image` | yes (single-service) | Container image (e.g. `registry.example.com/my-app`) |
 | `image_tag` | no | Image tag (default: `latest`) |
 | `platform` | no | Docker image platform (e.g. `linux/amd64`, `linux/arm64`). Default: host architecture |
-| `ports` | no | Port mappings with `host_port`, `container_port`, optional `protocol` |
+| `ports` | no | Port mappings. `host_port` accepts `8080` or `"127.0.0.1:8080"` (with bind address). `container_port`, optional `protocol` |
 | `volumes` | no | Bind mounts with `host_path`, `container_path`, optional `readonly` |
 | `env_vars` | no | Environment variables as key-value pairs (shared across services) |
 | `extra_options` | no | Raw YAML fragment merged into the compose service block |

@@ -1,6 +1,12 @@
 package types
 
-import "time"
+import (
+	"encoding/json"
+	"fmt"
+	"net"
+	"strconv"
+	"time"
+)
 
 // ConfigMode determines how compose.yaml is generated
 type ConfigMode string
@@ -46,11 +52,87 @@ const (
 	HealthNone HealthType = "none"
 )
 
-// PortMapping represents a single host:container port mapping
+// PortMapping represents a single host:container port mapping.
+// HostPort accepts "8080" or "127.0.0.1:8080" (with optional bind address).
 type PortMapping struct {
-	HostPort      int    `json:"host_port" yaml:"host_port"`
+	HostPort      string `json:"host_port" yaml:"host_port"`             // e.g. "8080", "127.0.0.1:8080", "localhost:8080"
 	ContainerPort int    `json:"container_port" yaml:"container_port"`
 	Protocol      string `json:"protocol,omitempty" yaml:"protocol,omitempty"` // tcp (default) | udp
+}
+
+// ParseHostPort splits HostPort into bind address and port number.
+// "8080" → ("", 8080, nil), "127.0.0.1:8080" → ("127.0.0.1", 8080, nil)
+func (pm PortMapping) ParseHostPort() (bindAddr string, port int, err error) {
+	s := pm.HostPort
+	if s == "" {
+		return "", 0, fmt.Errorf("empty host_port")
+	}
+	// Try plain number first
+	if p, err := strconv.Atoi(s); err == nil {
+		return "", p, nil
+	}
+	// host:port format
+	host, portStr, err := net.SplitHostPort(s)
+	if err != nil {
+		return "", 0, fmt.Errorf("invalid host_port %q: %w", s, err)
+	}
+	p, err := strconv.Atoi(portStr)
+	if err != nil {
+		return "", 0, fmt.Errorf("invalid port in host_port %q: %w", s, err)
+	}
+	return host, p, nil
+}
+
+// UnmarshalJSON handles both integer (legacy) and string formats for HostPort.
+func (pm *PortMapping) UnmarshalJSON(data []byte) error {
+	// Try the struct form with a string host_port
+	type Alias PortMapping
+	var raw struct {
+		Alias
+		HostPortRaw json.RawMessage `json:"host_port"`
+	}
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	*pm = PortMapping(raw.Alias)
+
+	// HostPortRaw could be a JSON number (legacy) or a JSON string
+	var s string
+	if err := json.Unmarshal(raw.HostPortRaw, &s); err == nil {
+		pm.HostPort = s
+		return nil
+	}
+	var n int
+	if err := json.Unmarshal(raw.HostPortRaw, &n); err == nil {
+		pm.HostPort = strconv.Itoa(n)
+		return nil
+	}
+	return fmt.Errorf("host_port must be a string or number, got %s", string(raw.HostPortRaw))
+}
+
+// UnmarshalYAML handles both integer (legacy) and string formats for HostPort.
+func (pm *PortMapping) UnmarshalYAML(unmarshal func(interface{}) error) error {
+	var raw struct {
+		HostPort      interface{} `yaml:"host_port"`
+		ContainerPort int         `yaml:"container_port"`
+		Protocol      string      `yaml:"protocol,omitempty"`
+	}
+	if err := unmarshal(&raw); err != nil {
+		return err
+	}
+	pm.ContainerPort = raw.ContainerPort
+	pm.Protocol = raw.Protocol
+	switch v := raw.HostPort.(type) {
+	case string:
+		pm.HostPort = v
+	case int:
+		pm.HostPort = strconv.Itoa(v)
+	case float64:
+		pm.HostPort = strconv.Itoa(int(v))
+	default:
+		return fmt.Errorf("host_port must be a string or number, got %T", v)
+	}
+	return nil
 }
 
 // VolumeMount represents a bind mount
