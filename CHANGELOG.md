@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.4.3
+
+### Platform Support
+
+- **Per-service platform**: Each service can specify a Docker image platform (`linux/amd64`, `linux/arm64`), resolving multi-arch digest mismatches
+- **Platform-aware registry polling**: `docker manifest inspect` now extracts the correct platform-specific digest from multi-arch manifests
+- **Per-port bind address**: `host_port` accepts `"127.0.0.1:8080"` or `"localhost:8080"` format for per-port bind address override (integer values still work)
+
+### WebSocket & UI Responsiveness
+
+- **Fix duplicate subscription packets**: Stabilize array references and deduplicate subscribe messages to prevent redundant WebSocket traffic
+- **Unsubscribe cleanup**: Leaving a page now properly unsubscribes from backend events; subscribe replaces the full set instead of appending
+- **Stopping/starting states**: Stop and Start immediately show a transitional state (`stopping`/`starting`) with spinner, instead of waiting for Docker to finish
+- **Complete event coverage**: Stop, Start, delete, update, import, and scheduler poll all emit WebSocket events — no more silent state changes
+- **New event types**: `poll_done`, `project_updated`, `project_deleted` for real-time cross-tab updates
+
+### Other
+
+- Add `make test` target for running all Go and frontend tests
+
 ## 0.4.2
 
 ### Multi-Container Deployment
