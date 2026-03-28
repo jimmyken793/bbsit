@@ -122,6 +122,7 @@ func generateFormCompose(p *types.Project) string {
 	for _, svc := range p.Services {
 		b.WriteString(fmt.Sprintf("  %s:\n", svc.Name))
 		b.WriteString(fmt.Sprintf("    image: %s:%s\n", svc.RegistryImage, svc.ImageTag))
+		b.WriteString("    pull_policy: always\n")
 		b.WriteString("    restart: unless-stopped\n")
 
 		// Ports
