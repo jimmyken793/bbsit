@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback } from 'react'
 import { BrowserRouter, Routes, Route, Navigate, Outlet, Link } from 'react-router-dom'
 import { api } from './api'
 import type { AuthStatus } from './types'
+import { WebSocketContext, useWebSocketConnection } from './hooks/useWebSocket'
 import SetupPage from './pages/SetupPage'
 import LoginPage from './pages/LoginPage'
 import DashboardPage from './pages/DashboardPage'
@@ -20,13 +21,14 @@ function Navbar({ onLogout }: { onLogout: () => void }) {
 }
 
 function Layout({ onLogout }: { onLogout: () => void }) {
+  const ws = useWebSocketConnection()
   return (
-    <>
+    <WebSocketContext.Provider value={ws}>
       <Navbar onLogout={onLogout} />
       <main className="container" style={{ paddingBottom: '32px' }}>
         <Outlet />
       </main>
-    </>
+    </WebSocketContext.Provider>
   )
 }
 

@@ -1,4 +1,4 @@
-import { useEffect, useRef, useCallback, useState } from 'react'
+import { createContext, useContext, useEffect, useRef, useCallback, useState } from 'react'
 
 export type EventType = 'step_start' | 'step_done' | 'log' | 'state_change' | 'deploy_done'
 
@@ -13,15 +13,41 @@ export interface DeployEvent {
 }
 
 type EventHandler = (event: DeployEvent) => void
+type Unsubscribe = () => void
 
-export function useWebSocket(projectIds: string[], onEvent: EventHandler) {
+interface WebSocketContextValue {
+  subscribe: (projectIds: string[], handler: EventHandler) => Unsubscribe
+  connected: boolean
+}
+
+export const WebSocketContext = createContext<WebSocketContextValue | null>(null)
+
+/**
+ * Hook that manages a single shared WebSocket connection.
+ * Used by WebSocketProvider in App — not called directly by pages.
+ */
+export function useWebSocketConnection() {
   const wsRef = useRef<WebSocket | null>(null)
   const reconnectTimer = useRef<ReturnType<typeof setTimeout>>(undefined)
-  const onEventRef = useRef(onEvent)
   const [connected, setConnected] = useState(false)
 
-  // Keep callback ref current without reconnecting
-  onEventRef.current = onEvent
+  // Each subscriber: { projectIds, handler }
+  const subscribersRef = useRef<Map<number, { projectIds: string[]; handler: EventHandler }>>(new Map())
+  const nextIdRef = useRef(0)
+
+  const sendSubscriptions = useCallback(() => {
+    const ws = wsRef.current
+    if (!ws || ws.readyState !== WebSocket.OPEN) return
+
+    // Collect all unique project IDs across subscribers
+    const allIds = new Set<string>()
+    for (const sub of subscribersRef.current.values()) {
+      for (const id of sub.projectIds) allIds.add(id)
+    }
+    if (allIds.size > 0) {
+      ws.send(JSON.stringify({ action: 'subscribe', project_ids: [...allIds] }))
+    }
+  }, [])
 
   const connect = useCallback(() => {
     const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
@@ -30,31 +56,33 @@ export function useWebSocket(projectIds: string[], onEvent: EventHandler) {
 
     ws.onopen = () => {
       setConnected(true)
-      if (projectIds.length > 0) {
-        ws.send(JSON.stringify({ action: 'subscribe', project_ids: projectIds }))
-      }
+      sendSubscriptions()
     }
 
     ws.onmessage = (e) => {
       try {
         const event: DeployEvent = JSON.parse(e.data)
-        onEventRef.current(event)
+        // Fan out to all subscribers interested in this project
+        for (const sub of subscribersRef.current.values()) {
+          if (sub.projectIds.includes(event.project_id)) {
+            sub.handler(event)
+          }
+        }
       } catch { /* ignore malformed messages */ }
     }
 
     ws.onclose = () => {
       setConnected(false)
       wsRef.current = null
-      // Reconnect with backoff
       reconnectTimer.current = setTimeout(connect, 3000)
     }
 
     ws.onerror = () => {
       ws.close()
     }
-  }, [projectIds])
+  }, [sendSubscriptions])
 
-  // Connect on mount, reconnect when projectIds change
+  // Connect once on mount
   useEffect(() => {
     connect()
     return () => {
@@ -63,13 +91,33 @@ export function useWebSocket(projectIds: string[], onEvent: EventHandler) {
     }
   }, [connect])
 
-  // Update subscriptions when projectIds change while connected
-  useEffect(() => {
-    const ws = wsRef.current
-    if (ws && ws.readyState === WebSocket.OPEN && projectIds.length > 0) {
-      ws.send(JSON.stringify({ action: 'subscribe', project_ids: projectIds }))
-    }
-  }, [projectIds])
+  const subscribe = useCallback((projectIds: string[], handler: EventHandler): Unsubscribe => {
+    const id = nextIdRef.current++
+    subscribersRef.current.set(id, { projectIds, handler })
+    sendSubscriptions()
 
-  return { connected }
+    return () => {
+      subscribersRef.current.delete(id)
+      // Could send updated subscriptions, but over-subscribing is harmless
+    }
+  }, [sendSubscriptions])
+
+  return { subscribe, connected }
+}
+
+/**
+ * Hook for pages to subscribe to WebSocket events for specific projects.
+ * Requires WebSocketProvider to be mounted above in the component tree.
+ */
+export function useWebSocket(projectIds: string[], onEvent: EventHandler) {
+  const ctx = useContext(WebSocketContext)
+  const onEventRef = useRef(onEvent)
+  onEventRef.current = onEvent
+
+  useEffect(() => {
+    if (!ctx || projectIds.length === 0) return
+    return ctx.subscribe(projectIds, (event) => onEventRef.current(event))
+  }, [ctx, projectIds])
+
+  return { connected: ctx?.connected ?? false }
 }
