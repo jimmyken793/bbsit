@@ -20,7 +20,7 @@ type DeployerIface interface {
 }
 
 // DigestFunc returns the remote image digest for a given image:tag.
-type DigestFunc func(runtime, image, tag string) (string, error)
+type DigestFunc func(runtime, image, tag, platform string) (string, error)
 
 type Scheduler struct {
 	db       *db.DB
@@ -158,7 +158,7 @@ func (s *Scheduler) reconcileOne(ctx context.Context, p *types.Project, state *t
 		if tag == "" {
 			tag = "latest"
 		}
-		remoteDigest, err := s.digestFn(s.runtime, svc.RegistryImage, tag)
+		remoteDigest, err := s.digestFn(s.runtime, svc.RegistryImage, tag, svc.Platform)
 		if err != nil {
 			log.Error("check remote digest", "service", svc.Name, "error", err)
 			state.LastError = fmt.Sprintf("service %s: %v", svc.Name, err)

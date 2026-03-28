@@ -91,6 +91,7 @@ A single project can contain multiple services (e.g., app + database + redis). A
 - **Name** — Used as the Docker Compose service name
 - **Registry image + tag** — The container image to deploy
 - **Polled** — Whether bbsit polls the registry for new digests (enable for app images, disable for stable base images like `postgres`)
+- **Platform** — Docker image platform (e.g. `linux/amd64`, `linux/arm64`). Leave empty to use the host's native architecture
 - **Ports, volumes, extra options** — Per-service configuration
 
 Environment variables are shared across all services via a `.env` file.
@@ -106,6 +107,7 @@ The YAML view uses the same fields as the form. You can define a single service 
 ```yaml
 registry_image: registry.example.com/my-app
 image_tag: latest
+platform: linux/amd64
 
 ports:
   - host_port: 8080
@@ -132,6 +134,7 @@ services:
     registry_image: registry.example.com/my-app
     image_tag: latest
     polled: true
+    platform: linux/amd64
     ports:
       - host_port: 8080
         container_port: 80
@@ -148,13 +151,14 @@ env_vars:
 |-------|----------|-------------|
 | `registry_image` | yes (single-service) | Container image (e.g. `registry.example.com/my-app`) |
 | `image_tag` | no | Image tag (default: `latest`) |
+| `platform` | no | Docker image platform (e.g. `linux/amd64`, `linux/arm64`). Default: host architecture |
 | `ports` | no | Port mappings with `host_port`, `container_port`, optional `protocol` |
 | `volumes` | no | Bind mounts with `host_path`, `container_path`, optional `readonly` |
 | `env_vars` | no | Environment variables as key-value pairs (shared across services) |
 | `extra_options` | no | Raw YAML fragment merged into the compose service block |
 | `services` | no | Array of services (replaces top-level `registry_image`/`ports`/etc.) |
 
-Each entry in `services` supports: `name`, `registry_image`, `image_tag`, `polled`, `ports`, `volumes`, `extra_options`.
+Each entry in `services` supports: `name`, `registry_image`, `image_tag`, `polled`, `platform`, `ports`, `volumes`, `extra_options`.
 
 BBSit generates `compose.yaml` from these fields. Health check, poll interval, and enabled/disabled are configured separately below the editor.
 

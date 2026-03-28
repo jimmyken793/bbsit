@@ -1,4 +1,4 @@
-.PHONY: build build-arm64 install clean deb deb-arm64 deploy-deb deploy-deb-arm64
+.PHONY: build build-arm64 install clean test deb deb-arm64 deploy-deb deploy-deb-arm64
 
 VERSION ?= 0.4.2
 
@@ -97,6 +97,10 @@ deploy-deb-arm64: dist/bbsit_$(VERSION)_arm64.deb
 	scp $< $(TARGET_HOST):/tmp/
 	ssh -t $(TARGET_HOST) 'sudo dpkg -i /tmp/$(notdir $<) && sudo systemctl restart bbsit'
 	@echo "Deployed $(VERSION) to $(TARGET_HOST)"
+
+test:
+	go test ./internal/... ./cmd/...
+	cd frontend && npm test
 
 clean:
 	rm -rf bin/ dist/ internal/web/frontend/dist/ frontend/node_modules/

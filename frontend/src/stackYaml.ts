@@ -7,12 +7,14 @@ interface StackConfigYaml {
     registry_image: string
     image_tag: string
     polled: boolean
+    platform?: string
     ports?: Array<{ host_port: number; container_port: number; protocol?: string }>
     volumes?: Array<{ host_path: string; container_path: string; readonly?: boolean }>
     extra_options?: string
   }>
   registry_image?: string
   image_tag?: string
+  platform?: string
   ports?: Array<{ host_port: number; container_port: number; protocol?: string }>
   volumes?: Array<{ host_path: string; container_path: string; readonly?: boolean }>
   extra_options?: string
@@ -33,6 +35,7 @@ export function formToYaml(
         image_tag: svc.image_tag || 'latest',
         polled: svc.polled,
       }
+      if (svc.platform) s.platform = svc.platform
       if (svc.ports?.length) s.ports = svc.ports
       if (svc.volumes?.length) s.volumes = svc.volumes
       if (svc.extra_options) s.extra_options = svc.extra_options
@@ -64,6 +67,7 @@ export function yamlToForm(text: string): {
       registry_image: s.registry_image || '',
       image_tag: s.image_tag || 'latest',
       polled: s.polled ?? true,
+      platform: s.platform,
       ports: s.ports,
       volumes: s.volumes,
       extra_options: s.extra_options,
@@ -74,6 +78,7 @@ export function yamlToForm(text: string): {
       registry_image: parsed.registry_image,
       image_tag: parsed.image_tag || 'latest',
       polled: true,
+      platform: parsed.platform,
       ports: parsed.ports,
       volumes: parsed.volumes,
       extra_options: parsed.extra_options,

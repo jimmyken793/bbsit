@@ -66,6 +66,7 @@ type ServiceConfig struct {
 	RegistryImage string        `json:"registry_image" yaml:"registry_image"`
 	ImageTag      string        `json:"image_tag" yaml:"image_tag"`
 	Polled        bool          `json:"polled" yaml:"polled"`
+	Platform      string        `json:"platform,omitempty" yaml:"platform,omitempty"` // e.g. linux/amd64, linux/arm64
 	Ports         []PortMapping `json:"ports,omitempty" yaml:"ports,omitempty"`
 	Volumes       []VolumeMount `json:"volumes,omitempty" yaml:"volumes,omitempty"`
 	ExtraOptions  string        `json:"extra_options,omitempty" yaml:"extra_options,omitempty"`

@@ -284,6 +284,18 @@ export default function ProjectFormPage() {
                         />
                       </div>
                       <div className="form-group">
+                        <label>Platform</label>
+                        <select
+                          className="form-control"
+                          value={svc.platform || ''}
+                          onChange={e => updateService(si, { platform: e.target.value || undefined })}
+                        >
+                          <option value="">Default (host)</option>
+                          <option value="linux/amd64">linux/amd64</option>
+                          <option value="linux/arm64">linux/arm64</option>
+                        </select>
+                      </div>
+                      <div className="form-group">
                         <label className="checkbox-label" style={{ marginTop: 24 }}>
                           <input
                             type="checkbox"

@@ -18,6 +18,31 @@ describe('formToYaml', () => {
     expect(yaml).toContain('DB_URL')
   })
 
+  it('includes platform when set', () => {
+    const services: ServiceConfig[] = [{
+      name: 'app',
+      registry_image: 'reg/app',
+      image_tag: 'latest',
+      polled: true,
+      platform: 'linux/arm64',
+    }]
+
+    const yaml = formToYaml(services, [])
+    expect(yaml).toContain('platform: linux/arm64')
+  })
+
+  it('omits platform when not set', () => {
+    const services: ServiceConfig[] = [{
+      name: 'app',
+      registry_image: 'reg/app',
+      image_tag: 'latest',
+      polled: true,
+    }]
+
+    const yaml = formToYaml(services, [])
+    expect(yaml).not.toContain('platform')
+  })
+
   it('includes ports and volumes when present', () => {
     const services: ServiceConfig[] = [{
       name: 'app',
@@ -91,6 +116,19 @@ ports:
     expect(result.services[0].image_tag).toBe('v2')
     expect(result.services[0].polled).toBe(true)
     expect(result.services[0].ports).toHaveLength(1)
+  })
+
+  it('parses platform from multi-service YAML', () => {
+    const text = `
+services:
+  - name: app
+    registry_image: reg/app
+    image_tag: latest
+    polled: true
+    platform: linux/arm64
+`
+    const result = yamlToForm(text)
+    expect(result.services[0].platform).toBe('linux/arm64')
   })
 
   it('returns empty arrays for empty/null input', () => {

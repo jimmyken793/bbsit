@@ -389,6 +389,24 @@ func TestWriteComposeFiles_MultiService(t *testing.T) {
 	}
 }
 
+func TestGenerateFormCompose_Platform(t *testing.T) {
+	p := baseProject()
+	p.Services[0].Platform = "linux/arm64"
+	got := generateFormCompose(p)
+
+	if !strings.Contains(got, "    platform: linux/arm64") {
+		t.Errorf("missing platform directive, got:\n%s", got)
+	}
+}
+
+func TestGenerateFormCompose_NoPlatform(t *testing.T) {
+	got := generateFormCompose(baseProject())
+
+	if strings.Contains(got, "platform:") {
+		t.Errorf("unexpected platform directive, got:\n%s", got)
+	}
+}
+
 func TestWriteEnvFile_Escaping(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, ".env")

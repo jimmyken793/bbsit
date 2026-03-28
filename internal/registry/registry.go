@@ -1,20 +1,30 @@
 package registry
 
 import (
+	"encoding/json"
 	"fmt"
 	"os/exec"
 	"strings"
 )
 
 // GetRemoteDigest returns the digest of an image tag from the remote registry.
+// platform is optional (e.g. "linux/arm64"); empty string means host default.
 // Uses `docker manifest inspect` which requires Docker CLI with experimental features.
 // Falls back to `docker buildx imagetools inspect` if available.
-func GetRemoteDigest(runtime, image, tag string) (string, error) {
+func GetRemoteDigest(runtime, image, tag, platform string) (string, error) {
 	ref := fmt.Sprintf("%s:%s", image, tag)
 
 	// Try manifest inspect first
 	out, err := runCmd(runtime, "manifest", "inspect", "--verbose", ref)
 	if err == nil {
+		if platform != "" {
+			// Multi-arch: find the digest for the requested platform
+			digest := parseDigestForPlatform(out, platform)
+			if digest != "" {
+				return digest, nil
+			}
+		}
+		// Single-arch or no platform specified: use first digest found
 		digest := parseDigestFromManifest(out)
 		if digest != "" {
 			return digest, nil
@@ -34,7 +44,12 @@ func GetRemoteDigest(runtime, image, tag string) (string, error) {
 
 	// Fallback: just pull and inspect
 	// This actually downloads the image but is the most reliable
-	if _, err := runCmd(runtime, "pull", ref); err != nil {
+	pullArgs := []string{"pull"}
+	if platform != "" {
+		pullArgs = append(pullArgs, "--platform", platform)
+	}
+	pullArgs = append(pullArgs, ref)
+	if _, err := runCmd(runtime, pullArgs...); err != nil {
 		return "", fmt.Errorf("pull %s: %w", ref, err)
 	}
 	out, err = runCmd(runtime, "inspect", "--format", "{{index .RepoDigests 0}}", ref)
@@ -95,6 +110,42 @@ func parseDigestFromManifest(output string) string {
 			}
 		}
 	}
+	return ""
+}
+
+// parseDigestForPlatform extracts the digest for a specific platform from
+// `docker manifest inspect --verbose` output. The output is a JSON array
+// of manifest entries, each with a "Descriptor" and "Platform" object.
+func parseDigestForPlatform(output, platform string) string {
+	// platform is "os/arch", e.g. "linux/arm64"
+	parts := strings.SplitN(platform, "/", 2)
+	if len(parts) != 2 {
+		return ""
+	}
+	wantOS, wantArch := parts[0], parts[1]
+
+	// Try parsing as JSON array of verbose manifest entries.
+	// `docker manifest inspect --verbose` nests platform inside Descriptor:
+	//   [{"Descriptor": {"digest": "sha256:...", "platform": {"architecture": "arm64", "os": "linux"}}, ...}]
+	var entries []struct {
+		Descriptor struct {
+			Digest   string `json:"digest"`
+			Platform struct {
+				Architecture string `json:"architecture"`
+				OS           string `json:"os"`
+			} `json:"platform"`
+		} `json:"Descriptor"`
+	}
+	if err := json.Unmarshal([]byte(output), &entries); err == nil {
+		for _, e := range entries {
+			if strings.EqualFold(e.Descriptor.Platform.OS, wantOS) && strings.EqualFold(e.Descriptor.Platform.Architecture, wantArch) {
+				if e.Descriptor.Digest != "" {
+					return e.Descriptor.Digest
+				}
+			}
+		}
+	}
+
 	return ""
 }
 

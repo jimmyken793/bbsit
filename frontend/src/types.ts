@@ -21,6 +21,7 @@ export interface ServiceConfig {
   registry_image: string
   image_tag: string
   polled: boolean
+  platform?: string // e.g. linux/amd64, linux/arm64
   ports?: PortMapping[]
   volumes?: VolumeMount[]
   extra_options?: string

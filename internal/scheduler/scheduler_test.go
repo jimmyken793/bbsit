@@ -95,7 +95,7 @@ func TestReconcile_MixedPolled(t *testing.T) {
 	digests := map[string]string{
 		"registry.example.com/app": "sha256:v1",
 	}
-	digestFn := func(runtime, image, tag string) (string, error) {
+	digestFn := func(runtime, image, tag, platform string) (string, error) {
 		return digests[image], nil
 	}
 
@@ -155,7 +155,7 @@ func TestReconcile_MixedPolled(t *testing.T) {
 // TestReconcile_AllUnpolled verifies that a project with no polled services is
 // skipped entirely (nothing to check).
 func TestReconcile_AllUnpolled(t *testing.T) {
-	digestFn := func(runtime, image, tag string) (string, error) {
+	digestFn := func(runtime, image, tag, platform string) (string, error) {
 		t.Fatalf("digestFn should not be called when no services are polled")
 		return "", nil
 	}

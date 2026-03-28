@@ -15,6 +15,7 @@ import (
 type stackConfig struct {
 	RegistryImage string              `yaml:"registry_image"`
 	ImageTag      string              `yaml:"image_tag"`
+	Platform      string              `yaml:"platform"`
 	Ports         []types.PortMapping `yaml:"ports"`
 	Volumes       []types.VolumeMount `yaml:"volumes"`
 	EnvVars       map[string]string   `yaml:"env_vars"`
@@ -55,6 +56,7 @@ func WriteComposeFiles(p *types.Project, imageOverrides map[string]string) error
 				Name:          p.ID,
 				RegistryImage: sc.RegistryImage,
 				ImageTag:      sc.ImageTag,
+				Platform:      sc.Platform,
 				Ports:         sc.Ports,
 				Volumes:       sc.Volumes,
 				ExtraOptions:  sc.ExtraOptions,
@@ -122,6 +124,9 @@ func generateFormCompose(p *types.Project) string {
 	for _, svc := range p.Services {
 		b.WriteString(fmt.Sprintf("  %s:\n", svc.Name))
 		b.WriteString(fmt.Sprintf("    image: %s:%s\n", svc.RegistryImage, svc.ImageTag))
+		if svc.Platform != "" {
+			b.WriteString(fmt.Sprintf("    platform: %s\n", svc.Platform))
+		}
 		b.WriteString("    pull_policy: always\n")
 		b.WriteString("    restart: unless-stopped\n")
 
