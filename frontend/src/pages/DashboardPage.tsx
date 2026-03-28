@@ -35,6 +35,12 @@ export default function DashboardPage() {
           : p
       ))
     }
+    if (event.type === 'project_deleted') {
+      setProjects(prev => prev.filter(p => p.id !== event.project_id))
+    }
+    if (event.type === 'project_updated') {
+      load()
+    }
   }, [])
 
   useWebSocket(projectIds, handleEvent)

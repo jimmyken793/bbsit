@@ -1,6 +1,6 @@
-import { createContext, useContext, useEffect, useRef, useCallback, useState } from 'react'
+import { createContext, useContext, useEffect, useRef, useCallback, useState, useMemo } from 'react'
 
-export type EventType = 'step_start' | 'step_done' | 'log' | 'state_change' | 'deploy_done'
+export type EventType = 'step_start' | 'step_done' | 'log' | 'state_change' | 'deploy_done' | 'poll_done' | 'project_updated' | 'project_deleted'
 
 export interface DeployEvent {
   type: EventType
@@ -34,8 +34,10 @@ export function useWebSocketConnection() {
   // Each subscriber: { projectIds, handler }
   const subscribersRef = useRef<Map<number, { projectIds: string[]; handler: EventHandler }>>(new Map())
   const nextIdRef = useRef(0)
+  // Track what we last sent to avoid duplicate subscribe messages
+  const lastSentRef = useRef<string>('')
 
-  const sendSubscriptions = useCallback(() => {
+  const syncSubscriptions = useCallback(() => {
     const ws = wsRef.current
     if (!ws || ws.readyState !== WebSocket.OPEN) return
 
@@ -44,8 +46,19 @@ export function useWebSocketConnection() {
     for (const sub of subscribersRef.current.values()) {
       for (const id of sub.projectIds) allIds.add(id)
     }
-    if (allIds.size > 0) {
-      ws.send(JSON.stringify({ action: 'subscribe', project_ids: [...allIds] }))
+
+    const sorted = [...allIds].sort()
+    const key = sorted.join(',')
+
+    // Skip if nothing changed since last send
+    if (key === lastSentRef.current) return
+    lastSentRef.current = key
+
+    if (sorted.length > 0) {
+      ws.send(JSON.stringify({ action: 'subscribe', project_ids: sorted }))
+    } else {
+      // No subscribers left — unsubscribe from everything on backend
+      ws.send(JSON.stringify({ action: 'unsubscribe_all' }))
     }
   }, [])
 
@@ -56,7 +69,9 @@ export function useWebSocketConnection() {
 
     ws.onopen = () => {
       setConnected(true)
-      sendSubscriptions()
+      // Force re-send on reconnect
+      lastSentRef.current = ''
+      syncSubscriptions()
     }
 
     ws.onmessage = (e) => {
@@ -80,7 +95,7 @@ export function useWebSocketConnection() {
     ws.onerror = () => {
       ws.close()
     }
-  }, [sendSubscriptions])
+  }, [syncSubscriptions])
 
   // Connect once on mount
   useEffect(() => {
@@ -94,13 +109,13 @@ export function useWebSocketConnection() {
   const subscribe = useCallback((projectIds: string[], handler: EventHandler): Unsubscribe => {
     const id = nextIdRef.current++
     subscribersRef.current.set(id, { projectIds, handler })
-    sendSubscriptions()
+    syncSubscriptions()
 
     return () => {
       subscribersRef.current.delete(id)
-      // Could send updated subscriptions, but over-subscribing is harmless
+      syncSubscriptions()
     }
-  }, [sendSubscriptions])
+  }, [syncSubscriptions])
 
   return { subscribe, connected }
 }
@@ -114,10 +129,13 @@ export function useWebSocket(projectIds: string[], onEvent: EventHandler) {
   const onEventRef = useRef(onEvent)
   onEventRef.current = onEvent
 
+  // Stabilize projectIds — only change when the actual IDs change, not the array reference
+  const stableIds = useMemo(() => projectIds, [projectIds.join(',')])
+
   useEffect(() => {
-    if (!ctx || projectIds.length === 0) return
-    return ctx.subscribe(projectIds, (event) => onEventRef.current(event))
-  }, [ctx, projectIds])
+    if (!ctx || stableIds.length === 0) return
+    return ctx.subscribe(stableIds, (event) => onEventRef.current(event))
+  }, [ctx, stableIds])
 
   return { connected: ctx?.connected ?? false }
 }

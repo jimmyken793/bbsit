@@ -162,6 +162,8 @@ func (c *client) readPump() {
 		c.mu.Lock()
 		switch cm.Action {
 		case "subscribe":
+			// Replace: set subscriptions to exactly the provided list
+			c.projects = make(map[string]bool, len(cm.ProjectIDs))
 			for _, id := range cm.ProjectIDs {
 				c.projects[id] = true
 			}
@@ -169,6 +171,8 @@ func (c *client) readPump() {
 			for _, id := range cm.ProjectIDs {
 				delete(c.projects, id)
 			}
+		case "unsubscribe_all":
+			c.projects = make(map[string]bool)
 		}
 		c.mu.Unlock()
 	}

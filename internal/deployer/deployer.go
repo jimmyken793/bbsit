@@ -41,6 +41,11 @@ func (d *Deployer) AddListener(l DeployListener) {
 	d.listeners = append(d.listeners, l)
 }
 
+// Emit broadcasts an event to all listeners.
+func (d *Deployer) Emit(e Event) {
+	d.emit(e)
+}
+
 func (d *Deployer) emit(e Event) {
 	if e.Timestamp.IsZero() {
 		e.Timestamp = time.Now().UTC()
@@ -258,30 +263,65 @@ func (d *Deployer) ManualRollback(p *types.Project) error {
 
 // Stop stops a project's compose stack
 func (d *Deployer) Stop(p *types.Project) error {
+	// Immediately transition to "stopping"
+	state, _ := d.db.GetState(p.ID)
+	if state != nil {
+		state.Status = types.StatusStopping
+		d.db.UpdateState(state)
+	}
+	d.emit(Event{Type: EventStateChange, ProjectID: p.ID, Status: string(types.StatusStopping)})
+
 	if err := composeCmd(d.runtime, p.StackPath, nil, "down"); err != nil {
+		d.emit(Event{Type: EventStateChange, ProjectID: p.ID, Status: string(types.StatusFailed), Error: true, Message: err.Error()})
+		if state != nil {
+			state.Status = types.StatusFailed
+			state.LastError = fmt.Sprintf("stop: %v", err)
+			d.db.UpdateState(state)
+		}
 		return err
 	}
-	state, _ := d.db.GetState(p.ID)
 	if state != nil {
 		state.Status = types.StatusStopped
 		d.db.UpdateState(state)
 	}
+	d.emit(Event{Type: EventStateChange, ProjectID: p.ID, Status: string(types.StatusStopped)})
 	return nil
 }
 
 // Start starts a project's compose stack with current config
 func (d *Deployer) Start(p *types.Project) error {
+	// Immediately transition to "starting"
+	state, _ := d.db.GetState(p.ID)
+	if state != nil {
+		state.Status = types.StatusStarting
+		d.db.UpdateState(state)
+	}
+	d.emit(Event{Type: EventStateChange, ProjectID: p.ID, Status: string(types.StatusStarting)})
+
 	if err := WriteComposeFiles(p, nil); err != nil {
+		d.emit(Event{Type: EventStateChange, ProjectID: p.ID, Status: string(types.StatusFailed), Error: true, Message: err.Error()})
+		if state != nil {
+			state.Status = types.StatusFailed
+			state.LastError = fmt.Sprintf("start: %v", err)
+			d.db.UpdateState(state)
+		}
 		return err
 	}
 	if err := composeCmd(d.runtime, p.StackPath, nil, "up", "-d"); err != nil {
+		d.emit(Event{Type: EventStateChange, ProjectID: p.ID, Status: string(types.StatusFailed), Error: true, Message: err.Error()})
+		if state != nil {
+			state.Status = types.StatusFailed
+			state.LastError = fmt.Sprintf("start: %v", err)
+			d.db.UpdateState(state)
+		}
 		return err
 	}
-	state, _ := d.db.GetState(p.ID)
 	if state != nil {
 		state.Status = types.StatusRunning
+		state.LastError = ""
 		d.db.UpdateState(state)
 	}
+	d.emit(Event{Type: EventStateChange, ProjectID: p.ID, Status: string(types.StatusRunning)})
 	return nil
 }
 

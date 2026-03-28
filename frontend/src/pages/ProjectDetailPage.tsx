@@ -44,11 +44,20 @@ export default function ProjectDetailPage() {
         state: { ...prev.state, status: event.status as ProjectDetail['state']['status'] }
       } : prev)
     }
-    if (event.type === 'deploy_done') {
+    if (event.type === 'deploy_done' || event.type === 'project_updated') {
       load()
     }
+    if (event.type === 'project_deleted') {
+      navigate('/')
+      return
+    }
+    if (event.type === 'poll_done') {
+      // Refresh state to pick up last_check_at / last_error changes
+      load()
+      return
+    }
     setLogLines(prev => [...prev, event])
-  }, [load])
+  }, [load, navigate])
 
   useWebSocket(projectIds, handleEvent)
 
@@ -89,7 +98,7 @@ export default function ProjectDetailPage() {
   if (!detail) return <div className="alert alert-danger">Project not found.</div>
 
   const { project: p, state, deployments } = detail
-  const isDeploying = state.status === 'deploying'
+  const isBusy = ['deploying', 'stopping', 'starting'].includes(state.status)
 
   return (
     <>
@@ -101,7 +110,7 @@ export default function ProjectDetailPage() {
           <h2 style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
             {p.display_name || p.id}
             <StatusBadge status={state.status} />
-            {isDeploying && <span className="spinner" />}
+            {isBusy && <span className="spinner" />}
           </h2>
           <div className="text-muted" style={{ fontSize: 12 }}>{p.id}</div>
         </div>
@@ -122,28 +131,28 @@ export default function ProjectDetailPage() {
         <button
           className="btn btn-primary btn-sm"
           onClick={() => action(() => api.projects.deploy(p.id), 'Deploy')}
-          disabled={isDeploying}
+          disabled={isBusy}
         >
-          {isDeploying ? <><span className="spinner" /> Deploying…</> : '▶ Deploy'}
+          {isBusy ? <><span className="spinner" /> {state.status === 'stopping' ? 'Stopping…' : state.status === 'starting' ? 'Starting…' : 'Deploying…'}</> : '▶ Deploy'}
         </button>
         <button
           className="btn btn-outline btn-sm"
           onClick={() => action(() => api.projects.rollback(p.id), 'Rollback')}
-          disabled={isDeploying || !hasDigests(state.previous_digests)}
+          disabled={isBusy || !hasDigests(state.previous_digests)}
         >
           ↩ Rollback
         </button>
         <button
           className="btn btn-outline btn-sm"
           onClick={() => action(() => api.projects.stop(p.id), 'Stop')}
-          disabled={isDeploying}
+          disabled={isBusy}
         >
           ■ Stop
         </button>
         <button
           className="btn btn-outline btn-sm"
           onClick={() => action(() => api.projects.start(p.id), 'Start')}
-          disabled={isDeploying}
+          disabled={isBusy}
         >
           ▷ Start
         </button>

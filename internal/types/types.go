@@ -22,6 +22,8 @@ const (
 	StatusUnknown    ProjectStatus = "unknown"
 	StatusRunning    ProjectStatus = "running"
 	StatusStopped    ProjectStatus = "stopped"
+	StatusStopping   ProjectStatus = "stopping"
+	StatusStarting   ProjectStatus = "starting"
 	StatusDeploying  ProjectStatus = "deploying"
 	StatusFailed     ProjectStatus = "failed"
 	StatusRolledBack ProjectStatus = "rolled_back"

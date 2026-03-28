@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/kingyoung/bbsit/internal/db"
+	"github.com/kingyoung/bbsit/internal/deployer"
 	"github.com/kingyoung/bbsit/internal/types"
 )
 
@@ -38,6 +39,8 @@ func (f *fakeDeployer) Deploy(p *types.Project, targetDigests map[string]string,
 	}
 	return f.returnError
 }
+
+func (f *fakeDeployer) Emit(e deployer.Event) {}
 
 func (f *fakeDeployer) callCount() int {
 	f.mu.Lock()

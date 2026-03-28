@@ -11,6 +11,7 @@ import (
 	"golang.org/x/crypto/bcrypt"
 	"gopkg.in/yaml.v3"
 
+	"github.com/kingyoung/bbsit/internal/deployer"
 	"github.com/kingyoung/bbsit/internal/types"
 )
 
@@ -169,6 +170,7 @@ func (s *Server) apiUpdateProject(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
 	}
+	s.deployer.Emit(deployer.Event{Type: deployer.EventProjectUpdated, ProjectID: p.ID})
 	writeJSON(w, http.StatusOK, p)
 }
 
@@ -180,6 +182,7 @@ func (s *Server) apiDeleteProject(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.deployer.Stop(p)
+	s.deployer.Emit(deployer.Event{Type: deployer.EventProjectDeleted, ProjectID: id})
 	s.db.DeleteProject(id)
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
@@ -276,6 +279,7 @@ func (s *Server) apiImportProject(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	s.deployer.Emit(deployer.Event{Type: deployer.EventProjectUpdated, ProjectID: p.ID})
 
 	writeJSON(w, http.StatusOK, p)
 }

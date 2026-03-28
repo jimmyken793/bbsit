@@ -17,6 +17,7 @@ import (
 // Defined as an interface so tests can substitute a fake.
 type DeployerIface interface {
 	Deploy(p *types.Project, targetDigests map[string]string, trigger types.DeployTrigger) error
+	Emit(e deployer.Event)
 }
 
 // DigestFunc returns the remote image digest for a given image:tag.
@@ -163,6 +164,10 @@ func (s *Scheduler) reconcileOne(ctx context.Context, p *types.Project, state *t
 			log.Error("check remote digest", "service", svc.Name, "error", err)
 			state.LastError = fmt.Sprintf("service %s: %v", svc.Name, err)
 			s.db.UpdateState(state)
+			s.deployer.Emit(deployer.Event{
+				Type: deployer.EventPollDone, ProjectID: p.ID,
+				Error: true, Message: state.LastError,
+			})
 			return
 		}
 
@@ -176,10 +181,15 @@ func (s *Scheduler) reconcileOne(ctx context.Context, p *types.Project, state *t
 		}
 	}
 
+	state.LastError = ""
 	s.db.UpdateState(state)
 
 	if !changed {
-		log.Info("poll complete: all services up to date", "trigger", trigger)
+		log.Debug("all services up to date")
+		s.deployer.Emit(deployer.Event{
+			Type: deployer.EventPollDone, ProjectID: p.ID,
+			Message: "up to date",
+		})
 		return
 	}
 

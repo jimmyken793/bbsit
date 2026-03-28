@@ -1,6 +1,6 @@
 export type ConfigMode = 'form' | 'custom'
 export type HealthType = 'http' | 'tcp' | 'none'
-export type ProjectStatus = 'unknown' | 'running' | 'stopped' | 'deploying' | 'failed' | 'rolled_back'
+export type ProjectStatus = 'unknown' | 'running' | 'stopped' | 'stopping' | 'starting' | 'deploying' | 'failed' | 'rolled_back'
 export type DeployStatus = 'success' | 'failed' | 'rolled_back' | 'in_progress'
 export type DeployTrigger = 'poll' | 'manual' | 'startup'
 

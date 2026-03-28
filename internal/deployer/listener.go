@@ -6,11 +6,14 @@ import "time"
 type EventType string
 
 const (
-	EventStepStart   EventType = "step_start"
-	EventStepDone    EventType = "step_done"
-	EventLog         EventType = "log"
-	EventStateChange EventType = "state_change"
-	EventDeployDone  EventType = "deploy_done"
+	EventStepStart      EventType = "step_start"
+	EventStepDone       EventType = "step_done"
+	EventLog            EventType = "log"
+	EventStateChange    EventType = "state_change"
+	EventDeployDone     EventType = "deploy_done"
+	EventPollDone       EventType = "poll_done"       // scheduler finished checking for updates
+	EventProjectUpdated EventType = "project_updated" // project config was changed
+	EventProjectDeleted EventType = "project_deleted" // project was removed
 )
 
 // Event is a structured deployment event emitted to listeners.
