@@ -56,9 +56,17 @@ func main() {
 		os.Exit(1)
 	}
 
+	// Resolve container runtime (docker or podman)
+	runtime, err := cfg.ResolvedRuntime()
+	if err != nil {
+		logger.Error("container runtime", "error", err)
+		os.Exit(1)
+	}
+	logger.Info("using container runtime", "runtime", runtime)
+
 	// Create deployer and scheduler
-	dep := deployer.New(database, logger)
-	sched := scheduler.New(database, dep, logger)
+	dep := deployer.New(database, logger, runtime)
+	sched := scheduler.New(database, dep, logger, runtime)
 
 	// Start scheduler
 	sched.Start()

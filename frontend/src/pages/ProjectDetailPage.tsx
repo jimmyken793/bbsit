@@ -25,6 +25,13 @@ export default function ProjectDetailPage() {
 
   useEffect(() => { load() }, [load])
 
+  // Periodically re-fetch so fields updated by routine polling (e.g. last_check_at)
+  // stay fresh — routine polls don't emit WebSocket events.
+  useEffect(() => {
+    const t = setInterval(load, 30000)
+    return () => clearInterval(t)
+  }, [load])
+
   const [logLines, setLogLines] = useState<DeployEvent[]>([])
   const logContainerRef = useRef<HTMLDivElement>(null)
 
@@ -102,6 +109,14 @@ export default function ProjectDetailPage() {
       </div>
 
       {actionError && <div className="alert alert-danger">{actionError}</div>}
+
+      {!p.enabled && (
+        <div className="alert alert-warning">
+          Auto-update polling is <strong>off</strong> for this project — the scheduler won't check for
+          new image versions.{' '}
+          <Link to={`/projects/${p.id}/edit`}>Edit</Link> to turn it back on. Manual Deploy still works.
+        </div>
+      )}
 
       <div className="btn-group" style={{ marginBottom: 20 }}>
         <button
@@ -184,7 +199,7 @@ export default function ProjectDetailPage() {
           <div className="kv-row"><span className="key">Stack path</span><span className="val">{p.stack_path}</span></div>
           <div className="kv-row"><span className="key">Health</span><span className="val">{p.health_type}{p.health_target ? ` · ${p.health_target}` : ''}</span></div>
           <div className="kv-row"><span className="key">Poll interval</span><span className="val">{p.poll_interval}s</span></div>
-          <div className="kv-row"><span className="key">Enabled</span><span className="val">{p.enabled ? 'Yes' : 'No'}</span></div>
+          <div className="kv-row"><span className="key">Auto-update</span><span className="val">{p.enabled ? 'On' : 'Off'}</span></div>
         </div>
       </div>
 

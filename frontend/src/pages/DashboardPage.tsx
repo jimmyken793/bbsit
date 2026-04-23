@@ -97,7 +97,14 @@ export default function DashboardPage() {
               </div>
               <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
                 <StatusBadge status={p.state?.status || 'unknown'} />
-                {!p.enabled && <span className="text-muted" style={{ fontSize: 12 }}>disabled</span>}
+                {!p.enabled && (
+                  <span
+                    title="Auto-update polling is off; scheduler skips this project"
+                    style={{ fontSize: 12, color: '#664d03', background: '#fff3cd', border: '1px solid #ffe69c', borderRadius: 4, padding: '2px 6px' }}
+                  >
+                    auto-update off
+                  </span>
+                )}
               </div>
             </Link>
           ))}

@@ -20,13 +20,15 @@ type Deployer struct {
 	db        *db.DB
 	locks     sync.Map // project_id -> *sync.Mutex
 	log       *slog.Logger
+	runtime   string // container runtime binary: "docker" or "podman"
 	listeners []DeployListener
 }
 
-func New(database *db.DB, logger *slog.Logger) *Deployer {
+func New(database *db.DB, logger *slog.Logger, runtime string) *Deployer {
 	return &Deployer{
-		db:  database,
-		log: logger,
+		db:      database,
+		log:     logger,
+		runtime: runtime,
 	}
 }
 
@@ -162,7 +164,7 @@ func (d *Deployer) executeDeploy(p *types.Project, digests map[string]string, lo
 
 	log.Info("pulling images")
 	d.emit(Event{Type: EventStepStart, ProjectID: p.ID, Step: "pull"})
-	if err := composeCmd(p.StackPath, logFn, "pull"); err != nil {
+	if err := composeCmd(d.runtime, p.StackPath, logFn, "pull"); err != nil {
 		d.emit(Event{Type: EventStepDone, ProjectID: p.ID, Step: "pull", Error: true, Message: err.Error()})
 		return fmt.Errorf("compose pull: %w", err)
 	}
@@ -170,7 +172,7 @@ func (d *Deployer) executeDeploy(p *types.Project, digests map[string]string, lo
 
 	log.Info("bringing up stack")
 	d.emit(Event{Type: EventStepStart, ProjectID: p.ID, Step: "up"})
-	if err := composeCmd(p.StackPath, logFn, "up", "-d", "--force-recreate", "--remove-orphans"); err != nil {
+	if err := composeCmd(d.runtime, p.StackPath, logFn, "up", "-d", "--force-recreate", "--remove-orphans"); err != nil {
 		d.emit(Event{Type: EventStepDone, ProjectID: p.ID, Step: "up", Error: true, Message: err.Error()})
 		return fmt.Errorf("compose up: %w", err)
 	}
@@ -195,7 +197,7 @@ func (d *Deployer) executeRollback(p *types.Project, prevDigests map[string]stri
 		return fmt.Errorf("write rollback compose: %w", err)
 	}
 
-	if err := composeCmd(p.StackPath, logFn, "up", "-d", "--force-recreate", "--remove-orphans"); err != nil {
+	if err := composeCmd(d.runtime, p.StackPath, logFn, "up", "-d", "--force-recreate", "--remove-orphans"); err != nil {
 		return fmt.Errorf("compose up rollback: %w", err)
 	}
 
@@ -256,7 +258,7 @@ func (d *Deployer) ManualRollback(p *types.Project) error {
 
 // Stop stops a project's compose stack
 func (d *Deployer) Stop(p *types.Project) error {
-	if err := composeCmd(p.StackPath, nil, "down"); err != nil {
+	if err := composeCmd(d.runtime, p.StackPath, nil, "down"); err != nil {
 		return err
 	}
 	state, _ := d.db.GetState(p.ID)
@@ -272,7 +274,7 @@ func (d *Deployer) Start(p *types.Project) error {
 	if err := WriteComposeFiles(p, nil); err != nil {
 		return err
 	}
-	if err := composeCmd(p.StackPath, nil, "up", "-d"); err != nil {
+	if err := composeCmd(d.runtime, p.StackPath, nil, "up", "-d"); err != nil {
 		return err
 	}
 	state, _ := d.db.GetState(p.ID)
@@ -283,7 +285,7 @@ func (d *Deployer) Start(p *types.Project) error {
 	return nil
 }
 
-func composeCmd(stackPath string, logFn func(line string, isErr bool), args ...string) error {
+func composeCmd(runtime, stackPath string, logFn func(line string, isErr bool), args ...string) error {
 	composeFile := stackPath + "/compose.yaml"
 	overridePath := stackPath + "/compose.override.yaml"
 
@@ -295,7 +297,7 @@ func composeCmd(stackPath string, logFn func(line string, isErr bool), args ...s
 	fullArgs := []string{"compose"}
 	fullArgs = append(fullArgs, fileArgs...)
 	fullArgs = append(fullArgs, args...)
-	cmd := exec.Command("docker", fullArgs...)
+	cmd := exec.Command(runtime, fullArgs...)
 	cmd.Dir = stackPath
 
 	if logFn == nil {

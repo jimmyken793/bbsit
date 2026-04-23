@@ -119,6 +119,8 @@ textarea.form-control { resize: vertical; font-family: monospace; }
 .alert { padding: 10px 12px; border-radius: 4px; font-size: 13px; margin-bottom: 16px; }
 .alert-danger { background: #f8d7da; color: #58151c; border: 1px solid #f1aeb5; }
 .alert-info { background: #cff4fc; color: #055160; border: 1px solid #9eeaf9; }
+.alert-warning { background: #fff3cd; color: #664d03; border: 1px solid #ffe69c; }
+.alert-warning a { color: #664d03; text-decoration: underline; }
 
 /* Cards */
 .card { background: var(--surface); border: 1px solid var(--border); border-radius: 6px; padding: 16px; }

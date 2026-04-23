@@ -88,6 +88,6 @@ describe('DashboardPage', () => {
     vi.mocked(api.projects.list).mockResolvedValueOnce([disabled])
     renderDashboard()
 
-    expect(await screen.findByText('disabled')).toBeInTheDocument()
+    expect(await screen.findByText('auto-update off')).toBeInTheDocument()
   })
 })

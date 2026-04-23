@@ -25,8 +25,8 @@ func testServer(t *testing.T) (*Server, *httptest.Server) {
 	t.Cleanup(func() { database.Close() })
 
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	dep := deployer.New(database, logger)
-	sched := scheduler.New(database, dep, logger)
+	dep := deployer.New(database, logger, "docker")
+	sched := scheduler.New(database, dep, logger, "docker")
 	stackRoot := t.TempDir()
 
 	srv := NewServer(database, dep, sched, logger, stackRoot)

@@ -13,19 +13,32 @@ import (
 	"github.com/kingyoung/bbsit/internal/types"
 )
 
+// DeployerIface is the subset of deployer.Deployer used by the scheduler.
+// Defined as an interface so tests can substitute a fake.
+type DeployerIface interface {
+	Deploy(p *types.Project, targetDigests map[string]string, trigger types.DeployTrigger) error
+}
+
+// DigestFunc returns the remote image digest for a given image:tag.
+type DigestFunc func(runtime, image, tag string) (string, error)
+
 type Scheduler struct {
 	db       *db.DB
-	deployer *deployer.Deployer
+	deployer DeployerIface
 	log      *slog.Logger
+	runtime  string // container runtime binary: "docker" or "podman"
+	digestFn DigestFunc
 	cancel   context.CancelFunc
 	wg       sync.WaitGroup
 }
 
-func New(database *db.DB, dep *deployer.Deployer, logger *slog.Logger) *Scheduler {
+func New(database *db.DB, dep *deployer.Deployer, logger *slog.Logger, runtime string) *Scheduler {
 	return &Scheduler{
 		db:       database,
 		deployer: dep,
 		log:      logger,
+		runtime:  runtime,
+		digestFn: registry.GetRemoteDigest,
 	}
 }
 
@@ -78,14 +91,18 @@ func (s *Scheduler) reconcileAll(ctx context.Context, trigger types.DeployTrigge
 		return
 	}
 
+	var reconciled, skippedDisabled, skippedNoPolled, skippedInterval int
 	for _, p := range projects {
 		if ctx.Err() != nil {
 			return
 		}
 		if !p.Enabled {
+			skippedDisabled++
 			continue
 		}
 		if len(p.PolledServices()) == 0 {
+			skippedNoPolled++
+			s.log.Debug("skip: no polled services", "project", p.ID, "services", len(p.Services))
 			continue
 		}
 
@@ -99,12 +116,23 @@ func (s *Scheduler) reconcileAll(ctx context.Context, trigger types.DeployTrigge
 		if trigger == types.TriggerPoll && state.LastCheckAt != nil {
 			elapsed := time.Since(*state.LastCheckAt)
 			if elapsed < time.Duration(p.PollInterval)*time.Second {
+				skippedInterval++
+				s.log.Debug("skip: within poll interval",
+					"project", p.ID, "elapsed_s", int(elapsed.Seconds()), "interval_s", p.PollInterval)
 				continue
 			}
 		}
 
+		reconciled++
 		s.reconcileOne(ctx, &p, state, trigger)
 	}
+
+	s.log.Debug("reconcile tick",
+		"trigger", trigger,
+		"reconciled", reconciled,
+		"skipped_disabled", skippedDisabled,
+		"skipped_no_polled", skippedNoPolled,
+		"skipped_interval", skippedInterval)
 }
 
 func (s *Scheduler) reconcileOne(ctx context.Context, p *types.Project, state *types.ProjectState, trigger types.DeployTrigger) {
@@ -130,7 +158,7 @@ func (s *Scheduler) reconcileOne(ctx context.Context, p *types.Project, state *t
 		if tag == "" {
 			tag = "latest"
 		}
-		remoteDigest, err := registry.GetRemoteDigest(svc.RegistryImage, tag)
+		remoteDigest, err := s.digestFn(s.runtime, svc.RegistryImage, tag)
 		if err != nil {
 			log.Error("check remote digest", "service", svc.Name, "error", err)
 			state.LastError = fmt.Sprintf("service %s: %v", svc.Name, err)
@@ -151,7 +179,7 @@ func (s *Scheduler) reconcileOne(ctx context.Context, p *types.Project, state *t
 	s.db.UpdateState(state)
 
 	if !changed {
-		log.Debug("all services up to date")
+		log.Info("poll complete: all services up to date", "trigger", trigger)
 		return
 	}
 

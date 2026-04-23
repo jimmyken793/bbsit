@@ -1,8 +1,7 @@
 [Unit]
 Description=BBSit - Pull-based deployment daemon
-After=network-online.target docker.service
-Wants=network-online.target
-Requires=docker.service
+After=network-online.target docker.service podman.service
+Wants=network-online.target docker.service podman.service
 
 [Service]
 Type=simple

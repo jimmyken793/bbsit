@@ -3,6 +3,7 @@ package config
 import (
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 
 	"gopkg.in/yaml.v3"
@@ -13,6 +14,25 @@ type Config struct {
 	DBPath    string `yaml:"db_path"`    // e.g. "/opt/bbsit/state.db"
 	StackRoot string `yaml:"stack_root"` // e.g. "/opt/stacks"
 	LogLevel  string `yaml:"log_level"`  // debug | info | warn | error
+	Runtime   string `yaml:"runtime"`    // "docker", "podman", or "" (auto-detect)
+}
+
+// ResolvedRuntime returns the container runtime binary name.
+// If Runtime is set explicitly, it validates that the binary exists on PATH.
+// Otherwise it auto-detects by checking for docker, then podman.
+func (c *Config) ResolvedRuntime() (string, error) {
+	if c.Runtime != "" {
+		if _, err := exec.LookPath(c.Runtime); err != nil {
+			return "", fmt.Errorf("configured runtime %q not found on PATH", c.Runtime)
+		}
+		return c.Runtime, nil
+	}
+	for _, rt := range []string{"docker", "podman"} {
+		if _, err := exec.LookPath(rt); err == nil {
+			return rt, nil
+		}
+	}
+	return "", fmt.Errorf("no container runtime found: install docker or podman")
 }
 
 func DefaultConfig() *Config {

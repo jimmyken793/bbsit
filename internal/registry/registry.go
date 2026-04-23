@@ -9,34 +9,35 @@ import (
 // GetRemoteDigest returns the digest of an image tag from the remote registry.
 // Uses `docker manifest inspect` which requires Docker CLI with experimental features.
 // Falls back to `docker buildx imagetools inspect` if available.
-func GetRemoteDigest(image, tag string) (string, error) {
+func GetRemoteDigest(runtime, image, tag string) (string, error) {
 	ref := fmt.Sprintf("%s:%s", image, tag)
 
-	// Try docker manifest inspect first
-	out, err := runCmd("docker", "manifest", "inspect", "--verbose", ref)
+	// Try manifest inspect first
+	out, err := runCmd(runtime, "manifest", "inspect", "--verbose", ref)
 	if err == nil {
-		// Parse digest from output — look for the digest field
 		digest := parseDigestFromManifest(out)
 		if digest != "" {
 			return digest, nil
 		}
 	}
 
-	// Fallback: use docker buildx imagetools inspect
-	out, err = runCmd("docker", "buildx", "imagetools", "inspect", "--raw", ref)
-	if err == nil {
-		digest := parseDigestFromRaw(out)
-		if digest != "" {
-			return digest, nil
+	// Fallback: use buildx imagetools inspect (docker-specific, skip for podman)
+	if runtime == "docker" {
+		out, err = runCmd(runtime, "buildx", "imagetools", "inspect", "--raw", ref)
+		if err == nil {
+			digest := parseDigestFromRaw(out)
+			if digest != "" {
+				return digest, nil
+			}
 		}
 	}
 
 	// Fallback: just pull and inspect
 	// This actually downloads the image but is the most reliable
-	if _, err := runCmd("docker", "pull", ref); err != nil {
+	if _, err := runCmd(runtime, "pull", ref); err != nil {
 		return "", fmt.Errorf("pull %s: %w", ref, err)
 	}
-	out, err = runCmd("docker", "inspect", "--format", "{{index .RepoDigests 0}}", ref)
+	out, err = runCmd(runtime, "inspect", "--format", "{{index .RepoDigests 0}}", ref)
 	if err != nil {
 		return "", fmt.Errorf("inspect %s: %w", ref, err)
 	}
@@ -49,13 +50,13 @@ func GetRemoteDigest(image, tag string) (string, error) {
 }
 
 // GetLocalDigest returns the digest of the currently running image for a compose service.
-func GetLocalDigest(stackPath, serviceName string) (string, error) {
-	out, err := runCmd("docker", "compose", "-f", stackPath+"/compose.yaml",
+func GetLocalDigest(runtime, stackPath, serviceName string) (string, error) {
+	out, err := runCmd(runtime, "compose", "-f", stackPath+"/compose.yaml",
 		"-f", stackPath+"/compose.override.yaml",
 		"images", "--format", "json", serviceName)
 	if err != nil {
 		// override might not exist, try without it
-		out, err = runCmd("docker", "compose", "-f", stackPath+"/compose.yaml",
+		out, err = runCmd(runtime, "compose", "-f", stackPath+"/compose.yaml",
 			"images", "--format", "json", serviceName)
 		if err != nil {
 			return "", fmt.Errorf("compose images: %w", err)
@@ -63,9 +64,9 @@ func GetLocalDigest(stackPath, serviceName string) (string, error) {
 	}
 
 	// Parse the image ID from compose images output
-	// Alternatively, get it from docker inspect on the running container
+	// Alternatively, get it from inspect on the running container
 	containerName := fmt.Sprintf("%s-%s-1", extractStackName(stackPath), serviceName)
-	out, err = runCmd("docker", "inspect", "--format", "{{index .Image}}", containerName)
+	out, err = runCmd(runtime, "inspect", "--format", "{{index .Image}}", containerName)
 	if err != nil {
 		return "", fmt.Errorf("inspect container %s: %w", containerName, err)
 	}

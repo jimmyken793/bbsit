@@ -451,9 +451,12 @@ export default function ProjectFormPage() {
                 checked={form.enabled ?? true}
                 onChange={e => set('enabled', e.target.checked)}
               />
-              Enabled
+              Auto-update polling
             </label>
-            <div className="form-hint">Disabled projects are skipped during polling.</div>
+            <div className="form-hint">
+              When on, bbsit periodically checks the registry and auto-deploys new image versions.
+              When off, the project is skipped by the scheduler — but you can still deploy, stop, and start manually.
+            </div>
           </div>
         </div>
 

@@ -145,7 +145,7 @@ func testDeployer(t *testing.T) *Deployer {
 	}
 	t.Cleanup(func() { database.Close() })
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	return New(database, logger)
+	return New(database, logger, "docker")
 }
 
 func TestNew(t *testing.T) {
