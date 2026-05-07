@@ -22,18 +22,9 @@ func TestDefaultConfig(t *testing.T) {
 	}
 }
 
-func TestLoad_MissingFile(t *testing.T) {
-	// Missing config file with invalid default paths should return an error
-	_, err := Load("/nonexistent/path/config.yaml")
-	if err == nil {
-		t.Fatal("expected error when config file missing and default paths don't exist")
-	}
-}
-
 func TestLoad_ValidFile(t *testing.T) {
 	tmpDir := t.TempDir()
 	stackDir := filepath.Join(tmpDir, "stacks")
-	os.MkdirAll(stackDir, 0755)
 
 	path := filepath.Join(tmpDir, "config.yaml")
 	content := `
@@ -57,16 +48,8 @@ log_level: "debug"
 	if cfg.LogLevel != "debug" {
 		t.Errorf("LogLevel = %q, want %q", cfg.LogLevel, "debug")
 	}
-}
-
-func TestLoad_PartialOverride(t *testing.T) {
-	// Partial override with invalid default paths should fail validation
-	path := filepath.Join(t.TempDir(), "config.yaml")
-	os.WriteFile(path, []byte(`log_level: "warn"`), 0644)
-
-	_, err := Load(path)
-	if err == nil {
-		t.Fatal("expected validation error when default paths don't exist")
+	if _, err := os.Stat(stackDir); err != nil {
+		t.Errorf("stack_root %q should have been auto-created: %v", stackDir, err)
 	}
 }
 
@@ -93,15 +76,39 @@ func TestValidate_EmptyFields(t *testing.T) {
 	}
 }
 
-func TestValidate_MissingDirectories(t *testing.T) {
+func TestValidate_AutoCreatesDirectories(t *testing.T) {
+	tmpDir := t.TempDir()
+	dbDir := filepath.Join(tmpDir, "dbdir")
+	stackRoot := filepath.Join(tmpDir, "stacks")
+
 	cfg := &Config{
 		Listen:    ":9090",
-		DBPath:    "/nonexistent/path/state.db",
-		StackRoot: "/tmp",
+		DBPath:    filepath.Join(dbDir, "state.db"),
+		StackRoot: stackRoot,
 	}
-	err := cfg.Validate()
-	if err == nil || !contains(err.Error(), "db_path directory") {
-		t.Errorf("expected db_path directory error, got: %v", err)
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("Validate: %v", err)
+	}
+	for _, dir := range []string{dbDir, stackRoot} {
+		if info, err := os.Stat(dir); err != nil || !info.IsDir() {
+			t.Errorf("expected %q to be auto-created as a directory, got: %v", dir, err)
+		}
+	}
+}
+
+func TestValidate_UncreatableDirectoryReturnsError(t *testing.T) {
+	tmpDir := t.TempDir()
+	readOnly := filepath.Join(tmpDir, "ro")
+	if err := os.Mkdir(readOnly, 0500); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+	cfg := &Config{
+		Listen:    ":9090",
+		DBPath:    "/tmp/state.db",
+		StackRoot: filepath.Join(readOnly, "stacks"),
+	}
+	if err := cfg.Validate(); err == nil || !contains(err.Error(), "stack_root directory") {
+		t.Errorf("expected stack_root creation error, got: %v", err)
 	}
 }
 

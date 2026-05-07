@@ -33,7 +33,7 @@ CI (build + push image)
 curl -fsSL https://raw.githubusercontent.com/jimmyken793/bbsit/main/install.sh | sudo bash
 ```
 
-Requires Debian/Ubuntu with Docker installed. Detects amd64/arm64 automatically.
+Requires Debian/Ubuntu with Docker or Podman installed. Detects amd64/arm64 automatically. With Podman, also install `podman-compose` (or `docker-compose`) so `podman compose` has a backend.
 
 ## Quick Start (build from source)
 
@@ -76,7 +76,7 @@ go run ./cmd/bbsit -config /tmp/bbsit/config.yaml
 
 Open http://localhost:9090 — first visit will prompt you to set a password.
 
-> **Note:** Deploy and health-check features require Docker. The web UI, project management, and API work without it.
+> **Note:** Deploy and health-check features require Docker or Podman (auto-detected; configurable via `runtime:` in `config.yaml`). The web UI, project management, and API work without either.
 
 ## Project Configuration
 

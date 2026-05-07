@@ -78,11 +78,11 @@ func (c *Config) Validate() error {
 		return fmt.Errorf("bbsit config: listen must not be empty")
 	}
 	dbDir := filepath.Dir(c.DBPath)
-	if _, err := os.Stat(dbDir); os.IsNotExist(err) {
-		return fmt.Errorf("bbsit config: db_path directory %q does not exist", dbDir)
+	if err := os.MkdirAll(dbDir, 0755); err != nil {
+		return fmt.Errorf("bbsit config: cannot create db_path directory %q: %w", dbDir, err)
 	}
-	if _, err := os.Stat(c.StackRoot); os.IsNotExist(err) {
-		return fmt.Errorf("bbsit config: stack_root directory %q does not exist", c.StackRoot)
+	if err := os.MkdirAll(c.StackRoot, 0755); err != nil {
+		return fmt.Errorf("bbsit config: cannot create stack_root directory %q: %w", c.StackRoot, err)
 	}
 	return nil
 }

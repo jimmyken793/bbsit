@@ -38,8 +38,8 @@ bin/bbsit-ctl-arm64: $(GO_SOURCES) | bin/
 dist/bbsit_$(VERSION)_amd64.deb: bin/bbsit bin/bbsit-ctl $(DEB_DEPS) | dist/
 	$(eval PKG := $(@:.deb=))
 	rm -rf $(PKG)
-	mkdir -p $(PKG)/DEBIAN $(PKG)/opt/bbsit \
-	         $(PKG)/opt/stacks $(PKG)/usr/local/bin $(PKG)/lib/systemd/system
+	mkdir -p $(PKG)/DEBIAN $(PKG)/opt/bbsit/stacks \
+	         $(PKG)/usr/local/bin $(PKG)/lib/systemd/system
 	cp bin/bbsit               $(PKG)/opt/bbsit/bbsit
 	cp bin/bbsit-ctl           $(PKG)/usr/local/bin/bbsit-ctl
 	cp deploy/config.yaml      $(PKG)/opt/bbsit/config.yaml
@@ -57,8 +57,8 @@ dist/bbsit_$(VERSION)_amd64.deb: bin/bbsit bin/bbsit-ctl $(DEB_DEPS) | dist/
 dist/bbsit_$(VERSION)_arm64.deb: bin/bbsit-arm64 bin/bbsit-ctl-arm64 $(DEB_DEPS) | dist/
 	$(eval PKG := $(@:.deb=))
 	rm -rf $(PKG)
-	mkdir -p $(PKG)/DEBIAN $(PKG)/opt/bbsit \
-	         $(PKG)/opt/stacks $(PKG)/usr/local/bin $(PKG)/lib/systemd/system
+	mkdir -p $(PKG)/DEBIAN $(PKG)/opt/bbsit/stacks \
+	         $(PKG)/usr/local/bin $(PKG)/lib/systemd/system
 	cp bin/bbsit-arm64         $(PKG)/opt/bbsit/bbsit
 	cp bin/bbsit-ctl-arm64     $(PKG)/usr/local/bin/bbsit-ctl
 	cp deploy/config.yaml      $(PKG)/opt/bbsit/config.yaml
@@ -74,7 +74,7 @@ dist/bbsit_$(VERSION)_arm64.deb: bin/bbsit-arm64 bin/bbsit-ctl-arm64 $(DEB_DEPS)
 	@echo "Built: $@"
 
 install: bin/bbsit bin/bbsit-ctl
-	sudo mkdir -p /opt/bbsit /opt/stacks
+	sudo mkdir -p /opt/bbsit/stacks
 	sudo cp bin/bbsit /opt/bbsit/
 	sudo cp bin/bbsit-ctl /usr/local/bin/
 	sudo cp deploy/config.yaml /opt/bbsit/config.yaml

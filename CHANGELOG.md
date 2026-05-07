@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+### Packaging
+
+- **.deb installs on Podman-only hosts**: `Depends:` now accepts `podman` as an alternative to Docker, and `podman-compose` / `docker-compose` as alternatives to the Docker compose plugin. Auto-detection in `config.yaml` already prefers `docker` then `podman`; set `runtime:` explicitly to override.
+- **Auto-create `stack_root` and `db_path` parent**: bbsit no longer fails to start when these directories are missing — `Validate()` now calls `os.MkdirAll`. The .deb postinst also creates `/opt/bbsit/stacks` (matching the default `stack_root`) instead of `/opt/stacks`.
+
 ## 0.4.3
 
 ### Platform Support
