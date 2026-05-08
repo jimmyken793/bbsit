@@ -98,7 +98,8 @@ func newClient(socket string) *client {
 					return net.Dial("unix", socket)
 				},
 			},
-			Timeout: 10 * time.Minute, // deploys can pull large images
+			// No Timeout: long-running ops (pack of large data dirs, deploy
+			// pulling large images) stream for arbitrary durations. Ctrl+C if needed.
 		},
 	}
 }
