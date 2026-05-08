@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"log/slog"
@@ -13,6 +14,7 @@ import (
 	"github.com/kingyoung/bbsit/internal/db"
 	"github.com/kingyoung/bbsit/internal/deployer"
 	"github.com/kingyoung/bbsit/internal/scheduler"
+	"github.com/kingyoung/bbsit/internal/tunnel"
 	"github.com/kingyoung/bbsit/internal/web"
 )
 
@@ -68,12 +70,22 @@ func main() {
 	dep := deployer.New(database, logger, runtime)
 	sched := scheduler.New(database, dep, logger, runtime)
 
+	// Tunnel manager — owns cloudflared system projects + ingress reconciliation
+	tm := tunnel.NewManager(database, dep, logger, cfg.StackRoot, runtime)
+
 	// Start scheduler
 	sched.Start()
 	defer sched.Stop()
 
+	// Reconcile any existing tunnels at startup so cloudflared system projects come up
+	go func() {
+		if err := tm.ReconcileAll(); err != nil {
+			logger.Error("startup tunnel reconcile", "error", err)
+		}
+	}()
+
 	// Create web server
-	srv := web.NewServer(database, dep, sched, logger, cfg.StackRoot)
+	srv := web.NewServer(database, dep, sched, tm, logger, cfg.StackRoot)
 
 	// Start HTTP server
 	httpServer := &http.Server{
@@ -89,9 +101,20 @@ func main() {
 		}
 	}()
 
+	// Admin Unix socket for bbsit-ctl
+	socketCtx, cancelSocket := context.WithCancel(context.Background())
+	defer cancelSocket()
+	if cfg.AdminSocket != "" {
+		if err := srv.ServeAdminSocket(socketCtx, cfg.AdminSocket, cfg.AdminGroup, 0); err != nil {
+			logger.Error("admin socket", "error", err)
+			os.Exit(1)
+		}
+	}
+
 	// Wait for signal
 	sig := make(chan os.Signal, 1)
 	signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)
 	s := <-sig
 	logger.Info("shutting down", "signal", s)
+	cancelSocket()
 }

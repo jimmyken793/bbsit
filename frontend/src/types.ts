@@ -16,6 +16,12 @@ export interface VolumeMount {
   readonly?: boolean
 }
 
+export interface PublicHostname {
+  tunnel_id: string
+  hostname: string
+  port: number
+}
+
 export interface ServiceConfig {
   name: string
   registry_image: string
@@ -27,6 +33,7 @@ export interface ServiceConfig {
   extra_options?: string
   health_type?: HealthType
   health_target?: string
+  public_hostnames?: PublicHostname[]
 }
 
 export interface Project {
@@ -48,8 +55,30 @@ export interface Project {
   poll_interval: number
   enabled: boolean
   env_vars?: Record<string, string>
+  is_system?: boolean
   created_at: string
   updated_at: string
+}
+
+export interface Tunnel {
+  id: string
+  name: string
+  cf_tunnel_id: string
+  account_tag: string
+  enabled: boolean
+  has_secret: boolean
+  created_at?: string
+  updated_at?: string
+}
+
+export interface TunnelInput {
+  id?: string
+  name?: string
+  enabled?: boolean
+  credentials?: string // raw credentials.json from CF dashboard
+  cf_tunnel_id?: string
+  account_tag?: string
+  tunnel_secret?: string
 }
 
 export interface ProjectState {

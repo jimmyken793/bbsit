@@ -156,6 +156,20 @@ export default function ProjectDetailPage() {
         >
           ▷ Start
         </button>
+        <a
+          className="btn btn-outline btn-sm"
+          href={`/api/projects/${p.id}/export?format=tar.gz`}
+          title="Download project bundle (project.yaml + bind-mount data dirs)"
+        >
+          ↓ Export bundle
+        </a>
+        <a
+          className="btn btn-outline btn-sm"
+          href={`/api/projects/${p.id}/export?format=yaml`}
+          title="Download project config as YAML (no data dirs)"
+        >
+          ↓ Export YAML
+        </a>
         <button className="btn btn-danger btn-sm" onClick={handleDelete}>
           🗑 Delete
         </button>

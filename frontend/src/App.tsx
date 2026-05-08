@@ -8,13 +8,17 @@ import LoginPage from './pages/LoginPage'
 import DashboardPage from './pages/DashboardPage'
 import ProjectDetailPage from './pages/ProjectDetailPage'
 import ProjectFormPage from './pages/ProjectFormPage'
+import TunnelsPage from './pages/TunnelsPage'
 
 function Navbar({ onLogout }: { onLogout: () => void }) {
   return (
     <nav className="navbar">
       <div className="container">
         <Link to="/" className="navbar-brand">bb<span>sit</span></Link>
-        <button className="btn btn-outline btn-sm" onClick={onLogout}>Logout</button>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+          <Link to="/tunnels" className="btn btn-outline btn-sm">Tunnels</Link>
+          <button className="btn btn-outline btn-sm" onClick={onLogout}>Logout</button>
+        </div>
       </div>
     </nav>
   )
@@ -74,6 +78,7 @@ export default function App() {
             <Route path="/projects/new" element={<ProjectFormPage />} />
             <Route path="/projects/:id/edit" element={<ProjectFormPage />} />
             <Route path="/projects/:id" element={<ProjectDetailPage />} />
+            <Route path="/tunnels" element={<TunnelsPage />} />
             <Route path="*" element={<Navigate to="/" replace />} />
           </Route>
         )}

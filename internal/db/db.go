@@ -50,6 +50,11 @@ func (db *DB) migrate() error {
 	db.migrateV3Data()
 	// v4: convert custom-mode projects to form mode
 	db.migrateV4CustomToForm()
+	// v5: add cloudflared tunnels and is_system flag
+	db.conn.Exec(`ALTER TABLE projects ADD COLUMN is_system INTEGER NOT NULL DEFAULT 0`)
+	if _, err := db.conn.Exec(schemaV5Tunnels); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -293,6 +298,19 @@ CREATE TABLE IF NOT EXISTS auth (
 );
 `
 
+const schemaV5Tunnels = `
+CREATE TABLE IF NOT EXISTS tunnels (
+    id              TEXT PRIMARY KEY,
+    name            TEXT NOT NULL,
+    cf_tunnel_id    TEXT NOT NULL,
+    account_tag     TEXT NOT NULL,
+    tunnel_secret   TEXT NOT NULL,
+    enabled         INTEGER NOT NULL DEFAULT 1,
+    created_at      TEXT NOT NULL,
+    updated_at      TEXT NOT NULL
+);
+`
+
 // --- Project CRUD ---
 
 func (db *DB) CreateProject(p *types.Project) error {
@@ -315,12 +333,12 @@ func (db *DB) CreateProject(p *types.Project) error {
 		INSERT INTO projects (id, display_name, config_mode,
 			registry_image, image_tag, ports, volumes, extra_options, bind_host,
 			custom_compose, stack_path, health_type, health_target,
-			poll_interval, enabled, env_vars, services, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			poll_interval, enabled, env_vars, services, is_system, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		p.ID, p.DisplayName, p.ConfigMode,
 		p.RegistryImage, p.ImageTag, string(portsJSON), string(volsJSON), p.ExtraOptions, p.BindHost,
 		p.CustomCompose, p.StackPath, p.HealthType, p.HealthTarget,
-		p.PollInterval, p.Enabled, string(envJSON), string(svcJSON), now, now,
+		p.PollInterval, p.Enabled, string(envJSON), string(svcJSON), boolToInt(p.IsSystem), now, now,
 	)
 	if err != nil {
 		return fmt.Errorf("insert project: %w", err)
@@ -349,12 +367,12 @@ func (db *DB) UpdateProject(p *types.Project) error {
 			display_name=?, config_mode=?,
 			registry_image=?, image_tag=?, ports=?, volumes=?, extra_options=?, bind_host=?,
 			custom_compose=?, stack_path=?, health_type=?, health_target=?,
-			poll_interval=?, enabled=?, env_vars=?, services=?, updated_at=?
+			poll_interval=?, enabled=?, env_vars=?, services=?, is_system=?, updated_at=?
 		WHERE id=?`,
 		p.DisplayName, p.ConfigMode,
 		p.RegistryImage, p.ImageTag, string(portsJSON), string(volsJSON), p.ExtraOptions, p.BindHost,
 		p.CustomCompose, p.StackPath, p.HealthType, p.HealthTarget,
-		p.PollInterval, p.Enabled, string(envJSON), string(svcJSON), now,
+		p.PollInterval, p.Enabled, string(envJSON), string(svcJSON), boolToInt(p.IsSystem), now,
 		p.ID,
 	)
 	return err
@@ -368,7 +386,7 @@ func (db *DB) DeleteProject(id string) error {
 const projectColumns = `id, display_name, config_mode,
 	registry_image, image_tag, ports, volumes, extra_options, bind_host,
 	custom_compose, stack_path, health_type, health_target,
-	poll_interval, enabled, env_vars, services, created_at, updated_at`
+	poll_interval, enabled, env_vars, services, is_system, created_at, updated_at`
 
 func (db *DB) GetProject(id string) (*types.Project, error) {
 	row := db.conn.QueryRow(`SELECT `+projectColumns+` FROM projects WHERE id=?`, id)
@@ -410,7 +428,7 @@ func (db *DB) ListProjectsWithState() ([]types.ProjectWithState, error) {
 	for rows.Next() {
 		var ps types.ProjectWithState
 		var portsJSON, volsJSON, envJSON, svcJSON string
-		var enabled int
+		var enabled, isSystem int
 		var createdAt, updatedAt string
 		var lastCheck, lastDeploy, lastSuccess sql.NullString
 		var curDigests, prevDigests, desDigests, lastErr sql.NullString
@@ -420,7 +438,7 @@ func (db *DB) ListProjectsWithState() ([]types.ProjectWithState, error) {
 			&ps.ID, &ps.DisplayName, (*string)(&ps.ConfigMode),
 			&ps.RegistryImage, &ps.ImageTag, &portsJSON, &volsJSON, &ps.ExtraOptions, &ps.BindHost,
 			&ps.CustomCompose, &ps.StackPath, (*string)(&ps.HealthType), &ps.HealthTarget,
-			&ps.PollInterval, &enabled, &envJSON, &svcJSON, &createdAt, &updatedAt,
+			&ps.PollInterval, &enabled, &envJSON, &svcJSON, &isSystem, &createdAt, &updatedAt,
 			&curDigests, &prevDigests, &desDigests,
 			&status, &lastCheck, &lastDeploy, &lastSuccess, &lastErr,
 		)
@@ -433,6 +451,7 @@ func (db *DB) ListProjectsWithState() ([]types.ProjectWithState, error) {
 		json.Unmarshal([]byte(envJSON), &ps.EnvVars)
 		json.Unmarshal([]byte(svcJSON), &ps.Services)
 		ps.Enabled = enabled == 1
+		ps.IsSystem = isSystem == 1
 		ps.CreatedAt, _ = time.Parse(time.RFC3339, createdAt)
 		ps.UpdatedAt, _ = time.Parse(time.RFC3339, updatedAt)
 
@@ -583,6 +602,72 @@ func (db *DB) ListDeployments(projectID string, limit int) ([]types.Deployment, 
 	return result, nil
 }
 
+// --- Tunnels ---
+
+func (db *DB) CreateTunnel(t *types.Tunnel) error {
+	now := time.Now().UTC().Format(time.RFC3339)
+	_, err := db.conn.Exec(`
+		INSERT INTO tunnels (id, name, cf_tunnel_id, account_tag, tunnel_secret, enabled, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		t.ID, t.Name, t.CFTunnelID, t.AccountTag, t.TunnelSecret, boolToInt(t.Enabled), now, now,
+	)
+	return err
+}
+
+func (db *DB) UpdateTunnel(t *types.Tunnel) error {
+	now := time.Now().UTC().Format(time.RFC3339)
+	_, err := db.conn.Exec(`
+		UPDATE tunnels SET name=?, cf_tunnel_id=?, account_tag=?, tunnel_secret=?, enabled=?, updated_at=?
+		WHERE id=?`,
+		t.Name, t.CFTunnelID, t.AccountTag, t.TunnelSecret, boolToInt(t.Enabled), now, t.ID,
+	)
+	return err
+}
+
+func (db *DB) DeleteTunnel(id string) error {
+	_, err := db.conn.Exec(`DELETE FROM tunnels WHERE id=?`, id)
+	return err
+}
+
+func (db *DB) GetTunnel(id string) (*types.Tunnel, error) {
+	row := db.conn.QueryRow(`
+		SELECT id, name, cf_tunnel_id, account_tag, tunnel_secret, enabled, created_at, updated_at
+		FROM tunnels WHERE id=?`, id)
+	return scanTunnel(row.Scan)
+}
+
+func (db *DB) ListTunnels() ([]types.Tunnel, error) {
+	rows, err := db.conn.Query(`
+		SELECT id, name, cf_tunnel_id, account_tag, tunnel_secret, enabled, created_at, updated_at
+		FROM tunnels ORDER BY id`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var tunnels []types.Tunnel
+	for rows.Next() {
+		t, err := scanTunnel(rows.Scan)
+		if err != nil {
+			return nil, err
+		}
+		tunnels = append(tunnels, *t)
+	}
+	return tunnels, nil
+}
+
+func scanTunnel(scan func(...any) error) (*types.Tunnel, error) {
+	var t types.Tunnel
+	var enabled int
+	var createdAt, updatedAt string
+	if err := scan(&t.ID, &t.Name, &t.CFTunnelID, &t.AccountTag, &t.TunnelSecret, &enabled, &createdAt, &updatedAt); err != nil {
+		return nil, err
+	}
+	t.Enabled = enabled == 1
+	t.CreatedAt, _ = time.Parse(time.RFC3339, createdAt)
+	t.UpdatedAt, _ = time.Parse(time.RFC3339, updatedAt)
+	return &t, nil
+}
+
 // --- Auth ---
 
 func (db *DB) SetPassword(hash string) error {
@@ -605,13 +690,13 @@ func (db *DB) GetPasswordHash() (string, error) {
 func scanProject(row *sql.Row) (*types.Project, error) {
 	var p types.Project
 	var portsJSON, volsJSON, envJSON, svcJSON string
-	var enabled int
+	var enabled, isSystem int
 	var createdAt, updatedAt string
 	err := row.Scan(
 		&p.ID, &p.DisplayName, (*string)(&p.ConfigMode),
 		&p.RegistryImage, &p.ImageTag, &portsJSON, &volsJSON, &p.ExtraOptions, &p.BindHost,
 		&p.CustomCompose, &p.StackPath, (*string)(&p.HealthType), &p.HealthTarget,
-		&p.PollInterval, &enabled, &envJSON, &svcJSON, &createdAt, &updatedAt,
+		&p.PollInterval, &enabled, &envJSON, &svcJSON, &isSystem, &createdAt, &updatedAt,
 	)
 	if err != nil {
 		return nil, err
@@ -621,6 +706,7 @@ func scanProject(row *sql.Row) (*types.Project, error) {
 	json.Unmarshal([]byte(envJSON), &p.EnvVars)
 	json.Unmarshal([]byte(svcJSON), &p.Services)
 	p.Enabled = enabled == 1
+	p.IsSystem = isSystem == 1
 	p.CreatedAt, _ = time.Parse(time.RFC3339, createdAt)
 	p.UpdatedAt, _ = time.Parse(time.RFC3339, updatedAt)
 	return &p, nil
@@ -629,13 +715,13 @@ func scanProject(row *sql.Row) (*types.Project, error) {
 func scanProjectRows(rows *sql.Rows) (*types.Project, error) {
 	var p types.Project
 	var portsJSON, volsJSON, envJSON, svcJSON string
-	var enabled int
+	var enabled, isSystem int
 	var createdAt, updatedAt string
 	err := rows.Scan(
 		&p.ID, &p.DisplayName, (*string)(&p.ConfigMode),
 		&p.RegistryImage, &p.ImageTag, &portsJSON, &volsJSON, &p.ExtraOptions, &p.BindHost,
 		&p.CustomCompose, &p.StackPath, (*string)(&p.HealthType), &p.HealthTarget,
-		&p.PollInterval, &enabled, &envJSON, &svcJSON, &createdAt, &updatedAt,
+		&p.PollInterval, &enabled, &envJSON, &svcJSON, &isSystem, &createdAt, &updatedAt,
 	)
 	if err != nil {
 		return nil, err
@@ -645,9 +731,17 @@ func scanProjectRows(rows *sql.Rows) (*types.Project, error) {
 	json.Unmarshal([]byte(envJSON), &p.EnvVars)
 	json.Unmarshal([]byte(svcJSON), &p.Services)
 	p.Enabled = enabled == 1
+	p.IsSystem = isSystem == 1
 	p.CreatedAt, _ = time.Parse(time.RFC3339, createdAt)
 	p.UpdatedAt, _ = time.Parse(time.RFC3339, updatedAt)
 	return &p, nil
+}
+
+func boolToInt(b bool) int {
+	if b {
+		return 1
+	}
+	return 0
 }
 
 func unmarshalDigestMap(s string) map[string]string {

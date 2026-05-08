@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -105,6 +106,16 @@ func (s *Server) apiListProjects(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
 	}
+	includeSystem := r.URL.Query().Get("include_system") == "true"
+	if !includeSystem {
+		filtered := projects[:0]
+		for _, p := range projects {
+			if !p.IsSystem {
+				filtered = append(filtered, p)
+			}
+		}
+		projects = filtered
+	}
 	if projects == nil {
 		projects = []types.ProjectWithState{}
 	}
@@ -150,6 +161,7 @@ func (s *Server) apiCreateProject(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
 	}
+	s.reconcileTunnels()
 	writeJSON(w, http.StatusCreated, p)
 }
 
@@ -171,6 +183,7 @@ func (s *Server) apiUpdateProject(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.deployer.Emit(deployer.Event{Type: deployer.EventProjectUpdated, ProjectID: p.ID})
+	s.reconcileTunnels()
 	writeJSON(w, http.StatusOK, p)
 }
 
@@ -184,6 +197,7 @@ func (s *Server) apiDeleteProject(w http.ResponseWriter, r *http.Request) {
 	s.deployer.Stop(p)
 	s.deployer.Emit(deployer.Event{Type: deployer.EventProjectDeleted, ProjectID: id})
 	s.db.DeleteProject(id)
+	s.reconcileTunnels()
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
 
@@ -228,7 +242,7 @@ func (s *Server) apiStart(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusAccepted, map[string]bool{"ok": true})
 }
 
-// --- YAML import ---
+// --- YAML / tar.gz import ---
 
 func (s *Server) apiImportProject(w http.ResponseWriter, r *http.Request) {
 	var data []byte
@@ -236,9 +250,9 @@ func (s *Server) apiImportProject(w http.ResponseWriter, r *http.Request) {
 
 	ct := r.Header.Get("Content-Type")
 	if strings.HasPrefix(ct, "multipart/form-data") {
-		r.ParseMultipartForm(1 << 20) // 1 MB
-		f, _, err := r.FormFile("file")
-		if err != nil {
+		r.ParseMultipartForm(64 << 20) // 64 MB (tarballs can include data dirs)
+		f, _, ferr := r.FormFile("file")
+		if ferr != nil {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "missing file field"})
 			return
 		}
@@ -256,12 +270,25 @@ func (s *Server) apiImportProject(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Detect format: gzip magic vs YAML
+	if len(data) >= 2 && data[0] == 0x1f && data[1] == 0x8b {
+		s.importTarball(w, data)
+		return
+	}
+
+	s.importYAML(w, data)
+}
+
+func (s *Server) importYAML(w http.ResponseWriter, data []byte) {
 	p := &types.Project{}
 	if err := yaml.Unmarshal(data, p); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid YAML: " + err.Error()})
 		return
 	}
+	s.upsertProject(w, p)
+}
 
+func (s *Server) upsertProject(w http.ResponseWriter, p *types.Project) {
 	if err := s.validateAndDefaultProject(p, true); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
@@ -280,8 +307,22 @@ func (s *Server) apiImportProject(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	s.deployer.Emit(deployer.Event{Type: deployer.EventProjectUpdated, ProjectID: p.ID})
+	s.reconcileTunnels()
 
 	writeJSON(w, http.StatusOK, p)
+}
+
+// reconcileTunnels rebuilds cloudflared ingress for every tunnel after a project change.
+// Runs in background so HTTP responses aren't blocked on cloudflared restarts.
+func (s *Server) reconcileTunnels() {
+	if s.tunnels == nil {
+		return
+	}
+	go func() {
+		if err := s.tunnels.ReconcileAll(); err != nil {
+			s.log.Error("reconcile tunnels", "error", err)
+		}
+	}()
 }
 
 // --- Helpers ---
@@ -375,7 +416,33 @@ func (s *Server) validateAndDefaultProject(p *types.Project, isNew bool) error {
 		if p.Services[i].ImageTag == "" {
 			p.Services[i].ImageTag = "latest"
 		}
+		// Normalise volume host paths so absolute paths under the stack dir become
+		// relative — relative paths are portable across hosts and travel with the
+		// project export bundle.
+		for j := range p.Services[i].Volumes {
+			p.Services[i].Volumes[j].HostPath = normaliseVolumeHostPath(p.Services[i].Volumes[j].HostPath, p.StackPath)
+		}
 	}
 
 	return nil
+}
+
+// normaliseVolumeHostPath makes a volume host path as portable as possible:
+//   - "" stays ""
+//   - "./foo", "foo/.", "foo/bar/.." all clean to canonical form
+//   - absolute paths under stackPath become relative to stackPath
+//   - absolute paths outside stackPath are kept as-is (operator-specific)
+func normaliseVolumeHostPath(p, stackPath string) string {
+	if p == "" {
+		return ""
+	}
+	cleaned := filepath.Clean(p)
+	if filepath.IsAbs(cleaned) && stackPath != "" {
+		absStack := filepath.Clean(stackPath)
+		if rel, err := filepath.Rel(absStack, cleaned); err == nil &&
+			!strings.HasPrefix(rel, "..") && rel != "." {
+			return rel
+		}
+	}
+	return cleaned
 }

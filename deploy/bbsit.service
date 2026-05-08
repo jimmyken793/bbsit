@@ -14,6 +14,10 @@ RestartSec=5
 TimeoutStartSec=30
 TimeoutStopSec=30
 
+# /run/bbsit for the admin Unix socket used by bbsit-ctl
+RuntimeDirectory=bbsit
+RuntimeDirectoryMode=0755
+
 # Logging
 StandardOutput=journal
 StandardError=journal

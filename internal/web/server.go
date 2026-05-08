@@ -13,6 +13,7 @@ import (
 	"github.com/kingyoung/bbsit/internal/db"
 	"github.com/kingyoung/bbsit/internal/deployer"
 	"github.com/kingyoung/bbsit/internal/scheduler"
+	"github.com/kingyoung/bbsit/internal/tunnel"
 )
 
 //go:embed all:frontend/dist
@@ -22,13 +23,14 @@ type Server struct {
 	db        *db.DB
 	deployer  *deployer.Deployer
 	scheduler *scheduler.Scheduler
+	tunnels   *tunnel.Manager
 	log       *slog.Logger
 	sessions  sync.Map // token -> expiry
 	stackRoot string
 	hub       *Hub
 }
 
-func NewServer(database *db.DB, dep *deployer.Deployer, sched *scheduler.Scheduler, logger *slog.Logger, stackRoot string) *Server {
+func NewServer(database *db.DB, dep *deployer.Deployer, sched *scheduler.Scheduler, tm *tunnel.Manager, logger *slog.Logger, stackRoot string) *Server {
 	h := NewHub()
 	go h.Run()
 	dep.AddListener(h)
@@ -37,6 +39,7 @@ func NewServer(database *db.DB, dep *deployer.Deployer, sched *scheduler.Schedul
 		db:        database,
 		deployer:  dep,
 		scheduler: sched,
+		tunnels:   tm,
 		log:       logger,
 		stackRoot: stackRoot,
 		hub:       h,
@@ -57,12 +60,20 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/projects", s.apiAuth(s.apiListProjects))
 	mux.HandleFunc("POST /api/projects", s.apiAuth(s.apiCreateProject))
 	mux.HandleFunc("GET /api/projects/{id}", s.apiAuth(s.apiGetProject))
+	mux.HandleFunc("GET /api/projects/{id}/export", s.apiAuth(s.apiExportProject))
 	mux.HandleFunc("PUT /api/projects/{id}", s.apiAuth(s.apiUpdateProject))
 	mux.HandleFunc("DELETE /api/projects/{id}", s.apiAuth(s.apiDeleteProject))
 	mux.HandleFunc("POST /api/projects/{id}/deploy", s.apiAuth(s.apiDeploy))
 	mux.HandleFunc("POST /api/projects/{id}/rollback", s.apiAuth(s.apiRollback))
 	mux.HandleFunc("POST /api/projects/{id}/stop", s.apiAuth(s.apiStop))
 	mux.HandleFunc("POST /api/projects/{id}/start", s.apiAuth(s.apiStart))
+
+	// Tunnels API (protected)
+	mux.HandleFunc("GET /api/tunnels", s.apiAuth(s.apiListTunnels))
+	mux.HandleFunc("POST /api/tunnels", s.apiAuth(s.apiCreateTunnel))
+	mux.HandleFunc("GET /api/tunnels/{id}", s.apiAuth(s.apiGetTunnel))
+	mux.HandleFunc("PUT /api/tunnels/{id}", s.apiAuth(s.apiUpdateTunnel))
+	mux.HandleFunc("DELETE /api/tunnels/{id}", s.apiAuth(s.apiDeleteTunnel))
 
 	// WebSocket for real-time events
 	mux.HandleFunc("GET /ws", s.apiAuth(func(w http.ResponseWriter, r *http.Request) {

@@ -11,6 +11,7 @@ interface StackConfigYaml {
     ports?: Array<{ host_port: string | number; container_port: number; protocol?: string }>
     volumes?: Array<{ host_path: string; container_path: string; readonly?: boolean }>
     extra_options?: string
+    public_hostnames?: Array<{ tunnel_id: string; hostname: string; port: number }>
   }>
   registry_image?: string
   image_tag?: string
@@ -39,6 +40,7 @@ export function formToYaml(
       if (svc.ports?.length) s.ports = svc.ports
       if (svc.volumes?.length) s.volumes = svc.volumes
       if (svc.extra_options) s.extra_options = svc.extra_options
+      if (svc.public_hostnames?.length) s.public_hostnames = svc.public_hostnames
       return s
     })
   }
@@ -71,6 +73,7 @@ export function yamlToForm(text: string): {
       ports: s.ports,
       volumes: s.volumes,
       extra_options: s.extra_options,
+      public_hostnames: s.public_hostnames,
     }))
   } else if (parsed.registry_image) {
     services = [{

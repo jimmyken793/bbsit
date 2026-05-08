@@ -3,9 +3,16 @@ set -e
 
 mkdir -p /opt/bbsit/stacks
 
+# Group that owns /run/bbsit/admin.sock — members can run bbsit-ctl without sudo.
+# Created on first install; left in place on upgrade. Not removed on purge.
+if ! getent group bbsit >/dev/null; then
+    groupadd --system bbsit
+fi
+
 systemctl daemon-reload
 systemctl enable bbsit.service
 systemctl start bbsit.service || true
 
 echo "bbsit installed. Web UI: http://localhost:9090"
 echo "Edit config: /opt/bbsit/config.yaml, then: sudo systemctl restart bbsit"
+echo "To use bbsit-ctl without sudo: sudo usermod -aG bbsit \$USER && newgrp bbsit"

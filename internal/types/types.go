@@ -144,18 +144,27 @@ type VolumeMount struct {
 	ReadOnly      bool   `json:"readonly,omitempty" yaml:"readonly,omitempty"`
 }
 
+// PublicHostname maps a Cloudflare tunnel hostname to a host port.
+// cloudflared will route hostname → http://localhost:port (host network).
+type PublicHostname struct {
+	TunnelID string `json:"tunnel_id" yaml:"tunnel_id"` // FK to Tunnel.ID
+	Hostname string `json:"hostname" yaml:"hostname"`   // e.g. app.example.com
+	Port     int    `json:"port" yaml:"port"`           // host port (the bound port on 127.0.0.1)
+}
+
 // ServiceConfig defines a single service within a project stack
 type ServiceConfig struct {
-	Name          string        `json:"name" yaml:"name"`
-	RegistryImage string        `json:"registry_image" yaml:"registry_image"`
-	ImageTag      string        `json:"image_tag" yaml:"image_tag"`
-	Polled        bool          `json:"polled" yaml:"polled"`
-	Platform      string        `json:"platform,omitempty" yaml:"platform,omitempty"` // e.g. linux/amd64, linux/arm64
-	Ports         []PortMapping `json:"ports,omitempty" yaml:"ports,omitempty"`
-	Volumes       []VolumeMount `json:"volumes,omitempty" yaml:"volumes,omitempty"`
-	ExtraOptions  string        `json:"extra_options,omitempty" yaml:"extra_options,omitempty"`
-	HealthType    HealthType    `json:"health_type,omitempty" yaml:"health_type,omitempty"`
-	HealthTarget  string        `json:"health_target,omitempty" yaml:"health_target,omitempty"`
+	Name            string           `json:"name" yaml:"name"`
+	RegistryImage   string           `json:"registry_image" yaml:"registry_image"`
+	ImageTag        string           `json:"image_tag" yaml:"image_tag"`
+	Polled          bool             `json:"polled" yaml:"polled"`
+	Platform        string           `json:"platform,omitempty" yaml:"platform,omitempty"` // e.g. linux/amd64, linux/arm64
+	Ports           []PortMapping    `json:"ports,omitempty" yaml:"ports,omitempty"`
+	Volumes         []VolumeMount    `json:"volumes,omitempty" yaml:"volumes,omitempty"`
+	ExtraOptions    string           `json:"extra_options,omitempty" yaml:"extra_options,omitempty"`
+	HealthType      HealthType       `json:"health_type,omitempty" yaml:"health_type,omitempty"`
+	HealthTarget    string           `json:"health_target,omitempty" yaml:"health_target,omitempty"`
+	PublicHostnames []PublicHostname `json:"public_hostnames,omitempty" yaml:"public_hostnames,omitempty"`
 }
 
 // Project is the full project definition stored in SQLite
@@ -186,8 +195,32 @@ type Project struct {
 	Enabled      bool              `json:"enabled"`
 	EnvVars      map[string]string `json:"env_vars,omitempty"`
 
+	// IsSystem marks projects auto-managed by bbsit (e.g. cloudflared tunnels).
+	// System projects are hidden from the dashboard by default.
+	IsSystem bool `json:"is_system,omitempty"`
+
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
+}
+
+// Tunnel represents a Cloudflare tunnel managed by bbsit.
+type Tunnel struct {
+	ID             string    `json:"id"`               // bbsit-side slug
+	Name           string    `json:"name"`             // display name
+	CFTunnelID     string    `json:"cf_tunnel_id"`     // Cloudflare tunnel UUID (TunnelID in credentials.json)
+	AccountTag     string    `json:"account_tag"`      // Cloudflare account tag
+	TunnelSecret   string    `json:"tunnel_secret"`    // base64 secret (sensitive — never returned to API)
+	Enabled        bool      `json:"enabled"`
+	CreatedAt      time.Time `json:"created_at"`
+	UpdatedAt      time.Time `json:"updated_at"`
+}
+
+// TunnelCredentials matches the JSON file layout produced by the Cloudflare dashboard
+// when downloading credentials for a locally-managed tunnel.
+type TunnelCredentials struct {
+	AccountTag   string `json:"AccountTag"`
+	TunnelSecret string `json:"TunnelSecret"`
+	TunnelID     string `json:"TunnelID"`
 }
 
 // PolledServices returns services that have polling enabled

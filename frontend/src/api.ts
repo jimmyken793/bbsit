@@ -1,4 +1,4 @@
-import type { AuthStatus, Project, ProjectWithState, ProjectDetail } from './types'
+import type { AuthStatus, Project, ProjectWithState, ProjectDetail, Tunnel, TunnelInput } from './types'
 
 export class ApiError extends Error {
   status: number
@@ -40,7 +40,10 @@ export const api = {
     logout: () => apiFetch<void>('/api/auth/logout', { method: 'POST' }),
   },
   projects: {
-    list: () => apiFetch<ProjectWithState[]>('/api/projects'),
+    list: (opts?: { includeSystem?: boolean }) =>
+      apiFetch<ProjectWithState[]>(
+        opts?.includeSystem ? '/api/projects?include_system=true' : '/api/projects'
+      ),
     get: (id: string) => apiFetch<ProjectDetail>(`/api/projects/${id}`),
     create: (p: Partial<Project>) =>
       apiFetch<Project>('/api/projects', {
@@ -64,6 +67,23 @@ export const api = {
       fd.append('file', file)
       return apiFetch<Project>('/api/projects/import', { method: 'POST', body: fd })
     },
+  },
+  tunnels: {
+    list: () => apiFetch<Tunnel[]>('/api/tunnels'),
+    get: (id: string) => apiFetch<Tunnel>(`/api/tunnels/${id}`),
+    create: (t: TunnelInput) =>
+      apiFetch<Tunnel>('/api/tunnels', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(t),
+      }),
+    update: (id: string, t: TunnelInput) =>
+      apiFetch<Tunnel>(`/api/tunnels/${id}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(t),
+      }),
+    delete: (id: string) => apiFetch<void>(`/api/tunnels/${id}`, { method: 'DELETE' }),
   },
 }
 

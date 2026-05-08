@@ -12,18 +12,19 @@ function StatusBadge({ status }: { status: string }) {
 export default function DashboardPage() {
   const [projects, setProjects] = useState<ProjectWithState[]>([])
   const [loading, setLoading] = useState(true)
+  const [showSystem, setShowSystem] = useState(false)
   const [importError, setImportError] = useState('')
   const [importOk, setImportOk] = useState('')
   const fileRef = useRef<HTMLInputElement>(null)
 
-  function load() {
-    api.projects.list()
+  const load = useCallback(() => {
+    api.projects.list({ includeSystem: showSystem })
       .then(setProjects)
       .catch(() => {})
       .finally(() => setLoading(false))
-  }
+  }, [showSystem])
 
-  useEffect(() => { load() }, [])
+  useEffect(() => { load() }, [load])
 
   const projectIds = projects.map(p => p.id)
 
@@ -64,12 +65,20 @@ export default function DashboardPage() {
       <div className="section-header">
         <h2>Projects</h2>
         <div className="btn-group">
-          <label className="yaml-import-label" title="Import project from YAML file">
-            ↑ Import YAML
+          <label className="checkbox-label" style={{ marginRight: 8, fontSize: 13, color: 'var(--muted)' }}>
+            <input
+              type="checkbox"
+              checked={showSystem}
+              onChange={e => setShowSystem(e.target.checked)}
+            />
+            Show system projects
+          </label>
+          <label className="yaml-import-label" title="Import project from YAML file or bundle (.tar.gz)">
+            ↑ Import YAML/Bundle
             <input
               ref={fileRef}
               type="file"
-              accept=".yaml,.yml"
+              accept=".yaml,.yml,.tar.gz,.tgz,.gz"
               style={{ display: 'none' }}
               onChange={e => {
                 const f = e.target.files?.[0]
@@ -102,6 +111,14 @@ export default function DashboardPage() {
                 </div>
               </div>
               <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+                {p.is_system && (
+                  <span
+                    title="System project managed by bbsit (e.g. cloudflared tunnel)"
+                    style={{ fontSize: 12, color: '#0c4a6e', background: '#e0f2fe', border: '1px solid #bae6fd', borderRadius: 4, padding: '2px 6px' }}
+                  >
+                    system
+                  </span>
+                )}
                 <StatusBadge status={p.state?.status || 'unknown'} />
                 {!p.enabled && (
                   <span

@@ -79,12 +79,14 @@ install: bin/bbsit bin/bbsit-ctl
 	sudo cp bin/bbsit-ctl /usr/local/bin/
 	sudo cp deploy/config.yaml /opt/bbsit/config.yaml
 	sudo cp deploy/bbsit.service /lib/systemd/system/
+	sudo getent group bbsit >/dev/null || sudo groupadd --system bbsit
 	sudo systemctl daemon-reload
 	@echo ""
 	@echo "Installed. Next steps:"
 	@echo "  1. Edit /opt/bbsit/config.yaml"
 	@echo "  2. sudo systemctl enable --now bbsit"
-	@echo "  3. Open http://localhost:9090 to set password and add projects"
+	@echo "  3. sudo usermod -aG bbsit $$USER && newgrp bbsit  (to run bbsit-ctl without sudo)"
+	@echo "  4. Open http://localhost:9090 to set password and add projects"
 
 deploy-deb: dist/bbsit_$(VERSION)_amd64.deb
 	@if [ -z "$(TARGET_HOST)" ]; then echo "Set TARGET_HOST=user@ip"; exit 1; fi

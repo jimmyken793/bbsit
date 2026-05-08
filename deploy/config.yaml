@@ -16,3 +16,11 @@ log_level: "info"
 
 # Container runtime: "docker", "podman", or omit for auto-detection
 # runtime: "docker"
+
+# Admin Unix socket for bbsit-ctl. Empty disables it.
+admin_socket: "/run/bbsit/admin.sock"
+
+# Group that owns the admin socket. The "bbsit" system group is created at
+# install time; add yourself with `sudo usermod -aG bbsit $USER` to run
+# bbsit-ctl without sudo. Set empty for root-only access.
+admin_group: "bbsit"

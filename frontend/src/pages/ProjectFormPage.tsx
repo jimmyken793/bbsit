@@ -3,7 +3,7 @@ import type { FormEvent } from 'react'
 import { useParams, useNavigate, Link } from 'react-router-dom'
 import { api, ApiError } from '../api'
 import { formToYaml, yamlToForm } from '../stackYaml'
-import type { Project, ServiceConfig, PortMapping, VolumeMount, HealthType } from '../types'
+import type { Project, ServiceConfig, PortMapping, VolumeMount, HealthType, Tunnel, PublicHostname } from '../types'
 
 const emptyService: ServiceConfig = {
   name: '',
@@ -29,12 +29,17 @@ export default function ProjectFormPage() {
   const [form, setForm] = useState<Partial<Project>>(defaultProject)
   const [services, setServices] = useState<ServiceConfig[]>([])
   const [envPairs, setEnvPairs] = useState<[string, string][]>([])
+  const [tunnels, setTunnels] = useState<Tunnel[]>([])
   const [viewMode, setViewMode] = useState<'form' | 'yaml'>('form')
   const [yamlText, setYamlText] = useState('')
   const [yamlError, setYamlError] = useState('')
   const [loading, setLoading] = useState(isEdit)
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
+
+  useEffect(() => {
+    api.tunnels.list().then(setTunnels).catch(() => {})
+  }, [])
 
   useEffect(() => {
     if (!isEdit) return
@@ -99,6 +104,15 @@ export default function ProjectFormPage() {
       const volumes = [...(s.volumes || [])]
       volumes[volIdx] = { ...volumes[volIdx], ...updates }
       return { ...s, volumes }
+    }))
+  }
+
+  function updateServiceHostname(svcIdx: number, hnIdx: number, updates: Partial<PublicHostname>) {
+    setServices(svcs => svcs.map((s, j) => {
+      if (j !== svcIdx) return s
+      const hostnames = [...(s.public_hostnames || [])]
+      hostnames[hnIdx] = { ...hostnames[hnIdx], ...updates }
+      return { ...s, public_hostnames: hostnames }
     }))
   }
 
@@ -346,6 +360,72 @@ export default function ProjectFormPage() {
                     </div>
 
                     <div className="form-section" style={{ marginTop: 8 }}>
+                      <label style={{ fontWeight: 600, fontSize: 13 }}>Public hostnames (Cloudflare tunnel)</label>
+                      {tunnels.length === 0 ? (
+                        <div className="form-hint">
+                          No tunnels configured. <Link to="/tunnels">Create one</Link> to expose this service publicly.
+                        </div>
+                      ) : (
+                        <>
+                          {(svc.public_hostnames || []).map((h, hi) => (
+                            <div key={hi} className="list-row">
+                              <select
+                                className="form-control"
+                                style={{ maxWidth: 180 }}
+                                value={h.tunnel_id}
+                                onChange={e => updateServiceHostname(si, hi, { tunnel_id: e.target.value })}
+                              >
+                                <option value="">— tunnel —</option>
+                                {tunnels.map(t => (
+                                  <option key={t.id} value={t.id}>{t.name || t.id}</option>
+                                ))}
+                              </select>
+                              <input
+                                className="form-control"
+                                placeholder="app.example.com"
+                                value={h.hostname}
+                                onChange={e => updateServiceHostname(si, hi, { hostname: e.target.value })}
+                              />
+                              <span>→ localhost:</span>
+                              <input
+                                type="number"
+                                className="form-control"
+                                style={{ maxWidth: 100 }}
+                                placeholder="port"
+                                value={h.port || ''}
+                                onChange={e => updateServiceHostname(si, hi, { port: +e.target.value })}
+                              />
+                              <button type="button" className="btn btn-outline btn-sm" onClick={() => updateService(si, { public_hostnames: (svc.public_hostnames || []).filter((_, j) => j !== hi) })}>✕</button>
+                            </div>
+                          ))}
+                          <button
+                            type="button"
+                            className="btn btn-outline btn-sm"
+                            onClick={() => {
+                              const firstPort = svc.ports?.[0]
+                              const defaultPort = firstPort
+                                ? (typeof firstPort.host_port === 'string' ? parseInt(firstPort.host_port.split(':').pop() || '0', 10) : firstPort.host_port)
+                                : 0
+                              updateService(si, {
+                                public_hostnames: [
+                                  ...(svc.public_hostnames || []),
+                                  { tunnel_id: tunnels[0]?.id || '', hostname: '', port: defaultPort || 0 },
+                                ],
+                              })
+                            }}
+                          >
+                            + Add hostname
+                          </button>
+                          {form.bind_host === '0.0.0.0' && (svc.public_hostnames || []).length > 0 && (
+                            <div className="form-hint" style={{ color: '#92400e' }}>
+                              ⚠ Service binds to 0.0.0.0 — cloudflared will reach it via localhost regardless, but the port is also publicly exposed.
+                            </div>
+                          )}
+                        </>
+                      )}
+                    </div>
+
+                    <div className="form-section" style={{ marginTop: 8 }}>
                       <label style={{ fontWeight: 600, fontSize: 13 }}>Extra options</label>
                       <textarea
                         className="form-control"
@@ -468,6 +548,31 @@ export default function ProjectFormPage() {
             <div className="form-hint">
               When on, bbsit periodically checks the registry and auto-deploys new image versions.
               When off, the project is skipped by the scheduler — but you can still deploy, stop, and start manually.
+            </div>
+          </div>
+        </div>
+
+        <div className="card" style={{ marginTop: 16 }}>
+          <div className="card-title">Advanced</div>
+
+          <div className="form-group">
+            <label>Stack path</label>
+            <input
+              className="form-control"
+              value={form.stack_path || ''}
+              onChange={e => set('stack_path', e.target.value)}
+              placeholder={isEdit ? '' : `(default: <stack_root>/${form.id || '<id>'})`}
+            />
+            <div className="form-hint">
+              Where bbsit writes <code>compose.yaml</code>, <code>.env</code>, and bind-mount data directories for this project.
+              Leave empty to use the default <code>{`<stack_root>/<project_id>`}</code>.
+              {isEdit && (
+                <>
+                  {' '}
+                  <strong>bbsit will not move existing files</strong> — if you change this, also <code>mv</code> the directory
+                  yourself first, then Stop/Start the project.
+                </>
+              )}
             </div>
           </div>
         </div>

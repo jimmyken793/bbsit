@@ -162,6 +162,12 @@ Each entry in `services` supports: `name`, `registry_image`, `image_tag`, `polle
 
 BBSit generates `compose.yaml` from these fields. Health check, poll interval, and enabled/disabled are configured separately below the editor.
 
+## Cloudflare Tunnels
+
+bbsit can manage Cloudflare tunnels and route public hostnames to your services
+without opening ports on the host. See [docs/cloudflared.md](docs/cloudflared.md)
+for setup.
+
 ## Deploy Flow
 
 1. Polls container registry for new image digests (per polled service)
@@ -173,10 +179,43 @@ BBSit generates `compose.yaml` from these fields. Health check, poll interval, a
 
 ## CLI
 
+`bbsit-ctl` talks to the daemon over a Unix socket at `/run/bbsit/admin.sock`.
+The package install creates a `bbsit` system group that owns the socket — add
+yourself once and you can manage bbsit without sudo:
+
 ```bash
-bbsit-ctl status              # All projects
-bbsit-ctl history <project>   # Deployment log
+sudo usermod -aG bbsit $USER
+newgrp bbsit   # or log out and back in
 ```
+
+```bash
+bbsit-ctl status                       # All projects
+bbsit-ctl history <id>                 # Deployment log
+bbsit-ctl start <id>                   # Start a stopped project
+bbsit-ctl stop <id>                    # Stop a project
+bbsit-ctl deploy <id>                  # Force a manual deploy
+bbsit-ctl rollback <id>                # Roll back to previous digest
+bbsit-ctl delete <id>                  # Stop and remove a project
+
+# Move a project to another bbsit host
+bbsit-ctl export <id>                  # Print project YAML to stdout
+bbsit-ctl pack <id> -o backup.tar.gz   # Project YAML + persistent data dirs
+bbsit-ctl unpack backup.tar.gz         # Restore on the target host
+```
+
+`pack` includes any volume host paths that live under the project's stack
+directory. Volumes pointing at absolute paths outside the stack must be
+migrated separately. `unpack` accepts both YAML (config only) and tar.gz
+(config + data) — the format is auto-detected.
+
+The socket path and group are configurable in `config.yaml`:
+
+```yaml
+admin_socket: "/run/bbsit/admin.sock"
+admin_group: "bbsit"    # empty = root only; "docker" also works on docker hosts
+```
+
+Override at runtime with `BBSIT_SOCKET=/path/to/sock bbsit-ctl ...`.
 
 ## Server Config
 

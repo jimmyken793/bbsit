@@ -5,7 +5,13 @@
 ### Packaging
 
 - **.deb installs on Podman-only hosts**: `Depends:` now accepts `podman` as an alternative to Docker, and `podman-compose` / `docker-compose` as alternatives to the Docker compose plugin. Auto-detection in `config.yaml` already prefers `docker` then `podman`; set `runtime:` explicitly to override.
-- **Auto-create `stack_root` and `db_path` parent**: bbsit no longer fails to start when these directories are missing — `Validate()` now calls `os.MkdirAll`. The .deb postinst also creates `/opt/bbsit/stacks` (matching the default `stack_root`) instead of `/opt/stacks`.
+
+### CLI
+
+- **Admin Unix socket**: Daemon exposes operational endpoints on `/run/bbsit/admin.sock`, owned by a dedicated `bbsit` system group created at install time. Add yourself with `sudo usermod -aG bbsit $USER` to run `bbsit-ctl` without sudo. Works the same for docker and podman hosts.
+- **bbsit-ctl actions**: New `start`, `stop`, `deploy`, `rollback`, `delete` commands, all routed through the daemon (avoids deploy-lock and SQLite-lock conflicts)
+- **bbsit-ctl export / pack / unpack**: `export <id>` prints project YAML; `pack <id> -o file.tar.gz` bundles config + persistent data dirs; `unpack <file>` restores either format on the target host
+- **Round-trippable import**: `/api/projects/import` now auto-detects gzip vs YAML
 
 ## 0.4.3
 

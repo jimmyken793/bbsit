@@ -15,6 +15,10 @@ type Config struct {
 	StackRoot string `yaml:"stack_root"` // e.g. "/opt/stacks"
 	LogLevel  string `yaml:"log_level"`  // debug | info | warn | error
 	Runtime   string `yaml:"runtime"`    // "docker", "podman", or "" (auto-detect)
+
+	// Admin Unix socket for bbsit-ctl. Empty AdminSocket disables it.
+	AdminSocket string `yaml:"admin_socket"` // e.g. "/run/bbsit/admin.sock"
+	AdminGroup  string `yaml:"admin_group"`  // group that may use the socket; empty = root only
 }
 
 // ResolvedRuntime returns the container runtime binary name.
@@ -37,10 +41,11 @@ func (c *Config) ResolvedRuntime() (string, error) {
 
 func DefaultConfig() *Config {
 	return &Config{
-		Listen:    "0.0.0.0:9090",
-		DBPath:    "/opt/bbsit/state.db",
-		StackRoot: "/opt/stacks",
-		LogLevel:  "info",
+		Listen:      "0.0.0.0:9090",
+		DBPath:      "/opt/bbsit/state.db",
+		StackRoot:   "/opt/stacks",
+		LogLevel:    "info",
+		AdminSocket: "/run/bbsit/admin.sock",
 	}
 }
 
