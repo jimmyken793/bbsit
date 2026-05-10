@@ -2,7 +2,6 @@ package web
 
 import (
 	"archive/tar"
-	"bytes"
 	"compress/gzip"
 	"context"
 	"fmt"
@@ -176,9 +175,15 @@ func (s *Server) apiExportProject(w http.ResponseWriter, r *http.Request) {
 	case "tar.gz", "tgz":
 		w.Header().Set("Content-Type", "application/gzip")
 		w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="%s.tar.gz"`, p.ID))
-		if err := writeProjectTarball(w, p); err != nil {
-			s.log.Error("export tarball", "project", id, "error", err)
+		start := time.Now()
+		s.log.Info("export tarball start", "project", id, "stack_path", p.StackPath)
+		counter := &countingWriter{w: w}
+		if err := writeProjectTarball(counter, p); err != nil {
+			s.log.Error("export tarball", "project", id, "error", err, "bytes", counter.n)
+			return
 		}
+		s.log.Info("export tarball done",
+			"project", id, "bytes", counter.n, "elapsed", time.Since(start).Round(time.Millisecond))
 	default:
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "format must be yaml or tar.gz"})
 	}
@@ -297,10 +302,28 @@ func addDirToTar(tw *tar.Writer, srcDir, prefix string) error {
 	})
 }
 
-// importTarball extracts a project bundle (project.yaml + data/<dir>/...) and
-// upserts the project. Data dirs are extracted under the project's stack path.
-func (s *Server) importTarball(w http.ResponseWriter, data []byte) {
-	gz, err := gzip.NewReader(bytes.NewReader(data))
+// countingWriter wraps an io.Writer to track total bytes written. Used so
+// export/import can log final transfer size without buffering.
+type countingWriter struct {
+	w io.Writer
+	n int64
+}
+
+func (c *countingWriter) Write(b []byte) (int, error) {
+	n, err := c.w.Write(b)
+	c.n += int64(n)
+	return n, err
+}
+
+// importTarball streams a project bundle (project.yaml + data/<dir>/...) and
+// upserts the project. project.yaml MUST be the first tar entry — that lets us
+// resolve the stack path before we start extracting data files, so we never
+// have to buffer the whole tarball in memory. writeProjectTarball produces
+// bundles in this order.
+func (s *Server) importTarball(w http.ResponseWriter, body io.Reader) {
+	importStart := time.Now()
+	s.log.Info("import tarball start")
+	gz, err := gzip.NewReader(body)
 	if err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid gzip: " + err.Error()})
 		return
@@ -308,62 +331,26 @@ func (s *Server) importTarball(w http.ResponseWriter, data []byte) {
 	defer gz.Close()
 
 	tr := tar.NewReader(gz)
-	var yamlBytes []byte
-	type pendingFile struct {
-		rel  string
-		mode int64
-		data []byte
-	}
-	type pendingDir struct {
-		rel  string
-		mode int64
-	}
-	var files []pendingFile
-	var dirs []pendingDir
 
-	for {
-		hdr, err := tr.Next()
-		if err == io.EOF {
-			break
-		}
-		if err != nil {
-			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "read tar: " + err.Error()})
-			return
-		}
-		name := filepath.Clean(hdr.Name)
-		if hasParentRef(name) || filepath.IsAbs(name) {
-			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "tar entry escapes root: " + hdr.Name})
-			return
-		}
-		if name == "project.yaml" {
-			yamlBytes, err = io.ReadAll(tr)
-			if err != nil {
-				writeJSON(w, http.StatusBadRequest, map[string]string{"error": "read project.yaml: " + err.Error()})
-				return
-			}
-			continue
-		}
-		// Everything else extracts to stack path verbatim
-		if hdr.Typeflag == tar.TypeDir {
-			dirs = append(dirs, pendingDir{rel: name, mode: hdr.Mode})
-			continue
-		}
-		if hdr.Typeflag != tar.TypeReg && hdr.Typeflag != tar.TypeRegA {
-			continue
-		}
-		b, err := io.ReadAll(tr)
-		if err != nil {
-			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "read tar entry: " + err.Error()})
-			return
-		}
-		files = append(files, pendingFile{rel: name, mode: hdr.Mode, data: b})
-	}
-
-	if yamlBytes == nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "tarball missing project.yaml"})
+	// First entry must be project.yaml.
+	hdr, err := tr.Next()
+	if err == io.EOF {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "empty tarball"})
 		return
 	}
-
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "read tar: " + err.Error()})
+		return
+	}
+	if filepath.Clean(hdr.Name) != "project.yaml" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "first tar entry must be project.yaml, got " + hdr.Name})
+		return
+	}
+	yamlBytes, err := io.ReadAll(tr)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "read project.yaml: " + err.Error()})
+		return
+	}
 	p := &types.Project{}
 	if err := yaml.Unmarshal(yamlBytes, p); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid project.yaml: " + err.Error()})
@@ -375,42 +362,93 @@ func (s *Server) importTarball(w http.ResponseWriter, data []byte) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
 	}
-
-	// Extract data dirs to stack path
 	if err := os.MkdirAll(p.StackPath, 0755); err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "mkdir stack: " + err.Error()})
 		return
 	}
-	for _, d := range dirs {
-		if d.rel == "" {
+
+	s.log.Info("import tarball extracting", "project", p.ID, "stack_path", p.StackPath)
+
+	// Stream remaining entries directly to disk under StackPath. Log progress
+	// periodically so a multi-GB import doesn't look hung in journalctl.
+	var fileCount, dirCount int
+	var totalBytes int64
+	lastLog := time.Now()
+	for {
+		hdr, err := tr.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "read tar: " + err.Error()})
+			return
+		}
+		name := filepath.Clean(hdr.Name)
+		if name == "" || name == "." {
 			continue
 		}
-		mode := os.FileMode(d.mode).Perm()
-		if mode == 0 {
-			mode = 0755
-		}
-		if err := os.MkdirAll(filepath.Join(p.StackPath, d.rel), mode); err != nil {
-			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "mkdir " + d.rel + ": " + err.Error()})
+		if hasParentRef(name) || filepath.IsAbs(name) {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "tar entry escapes root: " + hdr.Name})
 			return
 		}
-	}
-	for _, f := range files {
-		dst := filepath.Join(p.StackPath, f.rel)
-		if err := os.MkdirAll(filepath.Dir(dst), 0755); err != nil {
-			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
-			return
+		dst := filepath.Join(p.StackPath, name)
+
+		switch hdr.Typeflag {
+		case tar.TypeDir:
+			mode := os.FileMode(hdr.Mode).Perm()
+			if mode == 0 {
+				mode = 0755
+			}
+			if err := os.MkdirAll(dst, mode); err != nil {
+				writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "mkdir " + name + ": " + err.Error()})
+				return
+			}
+			dirCount++
+		case tar.TypeReg, tar.TypeRegA:
+			if err := os.MkdirAll(filepath.Dir(dst), 0755); err != nil {
+				writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+				return
+			}
+			mode := os.FileMode(hdr.Mode).Perm()
+			if mode == 0 {
+				mode = 0644
+			}
+			n, err := streamTarFile(tr, dst, mode)
+			if err != nil {
+				writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "write " + name + ": " + err.Error()})
+				return
+			}
+			fileCount++
+			totalBytes += n
+		default:
+			// skip symlinks/devices/etc.
 		}
-		mode := os.FileMode(f.mode).Perm()
-		if mode == 0 {
-			mode = 0644
-		}
-		if err := os.WriteFile(dst, f.data, mode); err != nil {
-			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "write " + f.rel + ": " + err.Error()})
-			return
+		if time.Since(lastLog) >= 2*time.Second {
+			s.log.Info("import tarball progress",
+				"project", p.ID, "files", fileCount, "dirs", dirCount, "bytes", totalBytes)
+			lastLog = time.Now()
 		}
 	}
 
+	s.log.Info("import tarball extracted",
+		"project", p.ID, "files", fileCount, "dirs", dirCount, "bytes", totalBytes,
+		"elapsed", time.Since(importStart).Round(time.Millisecond))
+
 	s.upsertProject(w, p)
+}
+
+// streamTarFile copies the current tar entry's body to dst without buffering
+// the whole entry in memory. Returns bytes written.
+func streamTarFile(tr *tar.Reader, dst string, mode os.FileMode) (int64, error) {
+	f, err := os.OpenFile(dst, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, mode)
+	if err != nil {
+		return 0, err
+	}
+	n, err := io.Copy(f, tr)
+	if cerr := f.Close(); err == nil {
+		err = cerr
+	}
+	return n, err
 }
 
 func addFileToTar(tw *tar.Writer, srcFile, name string) error {

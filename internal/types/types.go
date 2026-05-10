@@ -205,14 +205,15 @@ type Project struct {
 
 // Tunnel represents a Cloudflare tunnel managed by bbsit.
 type Tunnel struct {
-	ID             string    `json:"id"`               // bbsit-side slug
-	Name           string    `json:"name"`             // display name
-	CFTunnelID     string    `json:"cf_tunnel_id"`     // Cloudflare tunnel UUID (TunnelID in credentials.json)
-	AccountTag     string    `json:"account_tag"`      // Cloudflare account tag
-	TunnelSecret   string    `json:"tunnel_secret"`    // base64 secret (sensitive — never returned to API)
-	Enabled        bool      `json:"enabled"`
-	CreatedAt      time.Time `json:"created_at"`
-	UpdatedAt      time.Time `json:"updated_at"`
+	ID           string    `json:"id"`             // bbsit-side slug
+	Name         string    `json:"name"`           // display name
+	CFTunnelID   string    `json:"cf_tunnel_id"`   // Cloudflare tunnel UUID (TunnelID in credentials.json)
+	AccountTag   string    `json:"account_tag"`    // Cloudflare account tag
+	TunnelSecret string    `json:"tunnel_secret"`  // base64 secret (sensitive — never returned to API)
+	CFAPIToken   string    `json:"cf_api_token"`   // Cloudflare API token with Zone.DNS:Edit (sensitive — never returned)
+	Enabled      bool      `json:"enabled"`
+	CreatedAt    time.Time `json:"created_at"`
+	UpdatedAt    time.Time `json:"updated_at"`
 }
 
 // TunnelCredentials matches the JSON file layout produced by the Cloudflare dashboard

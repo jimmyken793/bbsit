@@ -7,6 +7,7 @@
 package tunnel
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -18,6 +19,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/kingyoung/bbsit/internal/cfapi"
 	"github.com/kingyoung/bbsit/internal/db"
 	"github.com/kingyoung/bbsit/internal/deployer"
 	"github.com/kingyoung/bbsit/internal/types"
@@ -76,8 +78,18 @@ func (m *Manager) ReconcileTunnel(tunnelID string) error {
 	if err := os.MkdirAll(stackPath, 0755); err != nil {
 		return fmt.Errorf("mkdir stack: %w", err)
 	}
+	// Lock the stack dir to operator-only. Container bind mounts are set up by
+	// the host, so they don't need to traverse this dir from inside the
+	// container — locking it here protects credentials.json from local users.
+	if err := os.Chmod(stackPath, 0700); err != nil {
+		return fmt.Errorf("chmod stack: %w", err)
+	}
 
-	// Write credentials.json (tunnel secret) — 0600, only owner reads
+	// Write credentials.json (tunnel secret). Mode 0644 so the cloudflared
+	// container process (typically UID 65532 / "nonroot" in distroless-based
+	// images) can read the bind-mounted file. The stack directory itself is
+	// operator-only, so on-host secrecy is enforced by directory perms, not
+	// by file perms.
 	if err := writeCredentials(stackPath, t); err != nil {
 		return fmt.Errorf("write credentials: %w", err)
 	}
@@ -124,7 +136,86 @@ func (m *Manager) ReconcileTunnel(tunnelID string) error {
 	if configChanged {
 		go m.restartCloudflared(stackPath, t.ID)
 	}
+
+	// Sync DNS records for routed hostnames. Runs in background so a slow
+	// Cloudflare API doesn't block the reconcile call (DNS may take seconds
+	// per record, and reconciles can be triggered from API handlers).
+	if t.CFAPIToken != "" && len(ingress) > 0 {
+		go m.syncDNS(t, ingress)
+	} else if t.CFAPIToken == "" && len(ingress) > 0 {
+		m.log.Info("skipping DNS sync — no Cloudflare API token on tunnel",
+			"tunnel", t.ID, "hostnames", len(ingress))
+	}
 	return nil
+}
+
+// syncDNS ensures each routed hostname has a proxied CNAME pointing at the
+// tunnel's *.cfargotunnel.com address. Errors are logged per-hostname and do
+// not fail the call — partial sync is better than no sync.
+func (m *Manager) syncDNS(t *types.Tunnel, ingress []ingressEntry) {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	client := cfapi.New(t.CFAPIToken)
+	zones, err := client.ListZones(ctx)
+	if err != nil {
+		m.log.Error("DNS sync: list zones", "tunnel", t.ID, "error", err)
+		return
+	}
+	zoneNames := make([]string, len(zones))
+	for i, z := range zones {
+		zoneNames[i] = z.Name
+	}
+	m.log.Info("DNS sync: zones visible to token",
+		"tunnel", t.ID, "count", len(zones), "zones", zoneNames)
+	target := t.CFTunnelID + ".cfargotunnel.com"
+
+	for _, e := range ingress {
+		zone := cfapi.FindZoneForHostname(zones, e.Hostname)
+		if zone == nil {
+			m.log.Warn("DNS sync: no matching zone for hostname — check token's Zone Resources scope",
+				"tunnel", t.ID, "hostname", e.Hostname, "visible_zones", zoneNames)
+			continue
+		}
+		if err := ensureCNAME(ctx, client, zone.ID, e.Hostname, target); err != nil {
+			m.log.Error("DNS sync: ensure CNAME",
+				"tunnel", t.ID, "hostname", e.Hostname, "zone", zone.Name, "error", err)
+			continue
+		}
+		m.log.Info("DNS sync: CNAME ok",
+			"tunnel", t.ID, "hostname", e.Hostname, "target", target, "zone", zone.Name)
+	}
+}
+
+// ensureCNAME creates or updates a proxied CNAME record so that name -> target.
+// It does NOT delete other records that might exist for the same name — if the
+// operator has, say, a TXT record for ACME alongside, it stays.
+func ensureCNAME(ctx context.Context, client *cfapi.Client, zoneID, name, target string) error {
+	recs, err := client.ListDNSRecords(ctx, zoneID, name)
+	if err != nil {
+		return fmt.Errorf("list dns: %w", err)
+	}
+	desired := cfapi.DNSRecord{
+		Type:    "CNAME",
+		Name:    name,
+		Content: target,
+		TTL:     1, // 1 = "automatic" in CF API
+		Proxied: true,
+	}
+	// Look for an existing CNAME or A/AAAA record under this name. If a CNAME
+	// exists, update it. If an A/AAAA exists (legacy origin), update it
+	// in-place to a CNAME (Cloudflare allows replacing the type via PUT).
+	for _, r := range recs {
+		if r.Type == "CNAME" || r.Type == "A" || r.Type == "AAAA" {
+			if r.Type == "CNAME" && r.Content == target && r.Proxied {
+				return nil // already correct
+			}
+			_, err := client.UpdateDNSRecord(ctx, zoneID, r.ID, desired)
+			return err
+		}
+	}
+	_, err = client.CreateDNSRecord(ctx, zoneID, desired)
+	return err
 }
 
 // ReconcileAll reconciles every tunnel. Used after project edits — a project
@@ -141,6 +232,162 @@ func (m *Manager) ReconcileAll() error {
 		}
 	}
 	return firstErr
+}
+
+// Route is one (hostname → service:port) mapping exposed via a tunnel,
+// optionally annotated with the live DNS status from Cloudflare.
+type Route struct {
+	Hostname  string   `json:"hostname"`
+	ProjectID string   `json:"project_id"`
+	Service   string   `json:"service"`
+	Port      int      `json:"port"`
+	DNS       RouteDNS `json:"dns"`
+}
+
+// RouteDNS describes whether the public DNS record for a hostname currently
+// points at this tunnel.
+type RouteDNS struct {
+	// Status is one of:
+	//   ok            — proxied CNAME pointing at <tunnel>.cfargotunnel.com
+	//   wrong_target  — record exists but points somewhere else
+	//   not_proxied   — CNAME correct but proxied=false (would bypass tunnel)
+	//   wrong_type    — non-CNAME record (A/AAAA) found at this name
+	//   missing       — no record found in the matched zone
+	//   no_zone       — no zone in the token's scope matches the hostname
+	//   no_token      — tunnel has no API token; status not checked
+	//   error         — Cloudflare API call failed (see Error)
+	Status         string `json:"status"`
+	ExpectedTarget string `json:"expected_target,omitempty"`
+	ActualTarget   string `json:"actual_target,omitempty"`
+	ActualType     string `json:"actual_type,omitempty"`
+	Proxied        bool   `json:"proxied,omitempty"`
+	Error          string `json:"error,omitempty"`
+}
+
+// RoutesFor returns every (hostname, service, port) route that cloudflared
+// would serve for this tunnel, plus a per-hostname DNS verification when the
+// tunnel has an API token. Safe to call from HTTP handlers — the underlying CF
+// calls have a 15s timeout each.
+func (m *Manager) RoutesFor(tunnelID string) ([]Route, error) {
+	t, err := m.db.GetTunnel(tunnelID)
+	if err != nil {
+		return nil, fmt.Errorf("get tunnel: %w", err)
+	}
+	entries, err := m.collectIngressFor(tunnelID)
+	if err != nil {
+		return nil, err
+	}
+	expected := t.CFTunnelID + ".cfargotunnel.com"
+	routes := make([]Route, len(entries))
+	for i, e := range entries {
+		routes[i] = Route{
+			Hostname:  e.Hostname,
+			ProjectID: e.ProjectID,
+			Service:   e.Service,
+			Port:      e.Port,
+			DNS:       RouteDNS{Status: "no_token", ExpectedTarget: expected},
+		}
+	}
+
+	if t.CFAPIToken == "" || len(routes) == 0 {
+		return routes, nil
+	}
+
+	// One zone listing covers all routes.
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	client := cfapi.New(t.CFAPIToken)
+	zones, err := client.ListZones(ctx)
+	if err != nil {
+		// Token is set but unusable — surface the error per-route so the user
+		// sees it in the UI rather than a vague no-data state.
+		for i := range routes {
+			routes[i].DNS = RouteDNS{
+				Status:         "error",
+				ExpectedTarget: expected,
+				Error:          fmt.Sprintf("list zones: %v", err),
+			}
+		}
+		return routes, nil
+	}
+
+	for i, e := range entries {
+		zone := cfapi.FindZoneForHostname(zones, e.Hostname)
+		if zone == nil {
+			routes[i].DNS = RouteDNS{Status: "no_zone", ExpectedTarget: expected}
+			continue
+		}
+		recs, err := client.ListDNSRecords(ctx, zone.ID, e.Hostname)
+		if err != nil {
+			routes[i].DNS = RouteDNS{
+				Status:         "error",
+				ExpectedTarget: expected,
+				Error:          err.Error(),
+			}
+			continue
+		}
+		routes[i].DNS = classifyDNS(expected, recs)
+		routes[i].DNS.ExpectedTarget = expected
+	}
+	return routes, nil
+}
+
+// classifyDNS picks the most relevant record at the hostname and decides whether
+// it correctly points at the tunnel.
+func classifyDNS(expectedTarget string, recs []cfapi.DNSRecord) RouteDNS {
+	if len(recs) == 0 {
+		return RouteDNS{Status: "missing"}
+	}
+	// Prefer CNAME, then A/AAAA, then anything else (TXT etc. are sibling-only).
+	var pick *cfapi.DNSRecord
+	for i, r := range recs {
+		if r.Type == "CNAME" {
+			pick = &recs[i]
+			break
+		}
+	}
+	if pick == nil {
+		for i, r := range recs {
+			if r.Type == "A" || r.Type == "AAAA" {
+				pick = &recs[i]
+				break
+			}
+		}
+	}
+	if pick == nil {
+		// Only sibling-only records (TXT etc.) — treat as missing for routing.
+		return RouteDNS{Status: "missing"}
+	}
+	if pick.Type != "CNAME" {
+		return RouteDNS{
+			Status:       "wrong_type",
+			ActualType:   pick.Type,
+			ActualTarget: pick.Content,
+			Proxied:      pick.Proxied,
+		}
+	}
+	if pick.Content != expectedTarget {
+		return RouteDNS{
+			Status:       "wrong_target",
+			ActualType:   pick.Type,
+			ActualTarget: pick.Content,
+			Proxied:      pick.Proxied,
+		}
+	}
+	if !pick.Proxied {
+		return RouteDNS{
+			Status:       "not_proxied",
+			ActualType:   pick.Type,
+			ActualTarget: pick.Content,
+			Proxied:      pick.Proxied,
+		}
+	}
+	return RouteDNS{
+		Status:       "ok",
+		ActualType:   pick.Type,
+		ActualTarget: pick.Content,
+		Proxied:      pick.Proxied,
+	}
 }
 
 // DeleteTunnel stops the cloudflared system project and deletes both the project
@@ -212,7 +459,7 @@ func writeCredentials(stackPath string, t *types.Tunnel) error {
 		return err
 	}
 	path := filepath.Join(stackPath, "credentials.json")
-	return os.WriteFile(path, b, 0600)
+	return os.WriteFile(path, b, 0644)
 }
 
 // writeConfigYml writes the cloudflared config.yml file.

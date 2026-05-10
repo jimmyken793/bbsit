@@ -55,6 +55,8 @@ func (db *DB) migrate() error {
 	if _, err := db.conn.Exec(schemaV5Tunnels); err != nil {
 		return err
 	}
+	// v6: add cf_api_token to tunnels for DNS auto-routing
+	db.conn.Exec(`ALTER TABLE tunnels ADD COLUMN cf_api_token TEXT NOT NULL DEFAULT ''`)
 	return nil
 }
 
@@ -607,9 +609,9 @@ func (db *DB) ListDeployments(projectID string, limit int) ([]types.Deployment, 
 func (db *DB) CreateTunnel(t *types.Tunnel) error {
 	now := time.Now().UTC().Format(time.RFC3339)
 	_, err := db.conn.Exec(`
-		INSERT INTO tunnels (id, name, cf_tunnel_id, account_tag, tunnel_secret, enabled, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-		t.ID, t.Name, t.CFTunnelID, t.AccountTag, t.TunnelSecret, boolToInt(t.Enabled), now, now,
+		INSERT INTO tunnels (id, name, cf_tunnel_id, account_tag, tunnel_secret, cf_api_token, enabled, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		t.ID, t.Name, t.CFTunnelID, t.AccountTag, t.TunnelSecret, t.CFAPIToken, boolToInt(t.Enabled), now, now,
 	)
 	return err
 }
@@ -617,9 +619,9 @@ func (db *DB) CreateTunnel(t *types.Tunnel) error {
 func (db *DB) UpdateTunnel(t *types.Tunnel) error {
 	now := time.Now().UTC().Format(time.RFC3339)
 	_, err := db.conn.Exec(`
-		UPDATE tunnels SET name=?, cf_tunnel_id=?, account_tag=?, tunnel_secret=?, enabled=?, updated_at=?
+		UPDATE tunnels SET name=?, cf_tunnel_id=?, account_tag=?, tunnel_secret=?, cf_api_token=?, enabled=?, updated_at=?
 		WHERE id=?`,
-		t.Name, t.CFTunnelID, t.AccountTag, t.TunnelSecret, boolToInt(t.Enabled), now, t.ID,
+		t.Name, t.CFTunnelID, t.AccountTag, t.TunnelSecret, t.CFAPIToken, boolToInt(t.Enabled), now, t.ID,
 	)
 	return err
 }
@@ -631,14 +633,14 @@ func (db *DB) DeleteTunnel(id string) error {
 
 func (db *DB) GetTunnel(id string) (*types.Tunnel, error) {
 	row := db.conn.QueryRow(`
-		SELECT id, name, cf_tunnel_id, account_tag, tunnel_secret, enabled, created_at, updated_at
+		SELECT id, name, cf_tunnel_id, account_tag, tunnel_secret, cf_api_token, enabled, created_at, updated_at
 		FROM tunnels WHERE id=?`, id)
 	return scanTunnel(row.Scan)
 }
 
 func (db *DB) ListTunnels() ([]types.Tunnel, error) {
 	rows, err := db.conn.Query(`
-		SELECT id, name, cf_tunnel_id, account_tag, tunnel_secret, enabled, created_at, updated_at
+		SELECT id, name, cf_tunnel_id, account_tag, tunnel_secret, cf_api_token, enabled, created_at, updated_at
 		FROM tunnels ORDER BY id`)
 	if err != nil {
 		return nil, err
@@ -659,7 +661,7 @@ func scanTunnel(scan func(...any) error) (*types.Tunnel, error) {
 	var t types.Tunnel
 	var enabled int
 	var createdAt, updatedAt string
-	if err := scan(&t.ID, &t.Name, &t.CFTunnelID, &t.AccountTag, &t.TunnelSecret, &enabled, &createdAt, &updatedAt); err != nil {
+	if err := scan(&t.ID, &t.Name, &t.CFTunnelID, &t.AccountTag, &t.TunnelSecret, &t.CFAPIToken, &enabled, &createdAt, &updatedAt); err != nil {
 		return nil, err
 	}
 	t.Enabled = enabled == 1

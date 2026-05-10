@@ -14,6 +14,9 @@ vi.mock('../api', async () => {
         list: vi.fn(),
         import: vi.fn(),
       },
+      tunnels: {
+        list: vi.fn().mockResolvedValue([]),
+      },
     },
   }
 })

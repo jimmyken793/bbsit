@@ -1,4 +1,4 @@
-import type { AuthStatus, Project, ProjectWithState, ProjectDetail, Tunnel, TunnelInput } from './types'
+import type { AuthStatus, Project, ProjectWithState, ProjectDetail, Tunnel, TunnelInput, TunnelRoute } from './types'
 
 export class ApiError extends Error {
   status: number
@@ -71,6 +71,8 @@ export const api = {
   tunnels: {
     list: () => apiFetch<Tunnel[]>('/api/tunnels'),
     get: (id: string) => apiFetch<Tunnel>(`/api/tunnels/${id}`),
+    routes: (id: string) => apiFetch<TunnelRoute[]>(`/api/tunnels/${id}/routes`),
+    sync: (id: string) => apiFetch<void>(`/api/tunnels/${id}/sync`, { method: 'POST' }),
     create: (t: TunnelInput) =>
       apiFetch<Tunnel>('/api/tunnels', {
         method: 'POST',

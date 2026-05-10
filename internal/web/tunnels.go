@@ -6,31 +6,34 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/kingyoung/bbsit/internal/tunnel"
 	"github.com/kingyoung/bbsit/internal/types"
 )
 
-// tunnelResponse is the public shape — we never return tunnel_secret to clients.
+// tunnelResponse is the public shape — we never return secrets to clients.
 type tunnelResponse struct {
-	ID         string `json:"id"`
-	Name       string `json:"name"`
-	CFTunnelID string `json:"cf_tunnel_id"`
-	AccountTag string `json:"account_tag"`
-	Enabled    bool   `json:"enabled"`
-	HasSecret  bool   `json:"has_secret"`
-	CreatedAt  string `json:"created_at,omitempty"`
-	UpdatedAt  string `json:"updated_at,omitempty"`
+	ID          string `json:"id"`
+	Name        string `json:"name"`
+	CFTunnelID  string `json:"cf_tunnel_id"`
+	AccountTag  string `json:"account_tag"`
+	Enabled     bool   `json:"enabled"`
+	HasSecret   bool   `json:"has_secret"`
+	HasAPIToken bool   `json:"has_api_token"`
+	CreatedAt   string `json:"created_at,omitempty"`
+	UpdatedAt   string `json:"updated_at,omitempty"`
 }
 
 func toTunnelResponse(t *types.Tunnel) tunnelResponse {
 	return tunnelResponse{
-		ID:         t.ID,
-		Name:       t.Name,
-		CFTunnelID: t.CFTunnelID,
-		AccountTag: t.AccountTag,
-		Enabled:    t.Enabled,
-		HasSecret:  t.TunnelSecret != "",
-		CreatedAt:  t.CreatedAt.Format("2006-01-02T15:04:05Z07:00"),
-		UpdatedAt:  t.UpdatedAt.Format("2006-01-02T15:04:05Z07:00"),
+		ID:          t.ID,
+		Name:        t.Name,
+		CFTunnelID:  t.CFTunnelID,
+		AccountTag:  t.AccountTag,
+		Enabled:     t.Enabled,
+		HasSecret:   t.TunnelSecret != "",
+		HasAPIToken: t.CFAPIToken != "",
+		CreatedAt:   t.CreatedAt.Format("2006-01-02T15:04:05Z07:00"),
+		UpdatedAt:   t.UpdatedAt.Format("2006-01-02T15:04:05Z07:00"),
 	}
 }
 
@@ -67,6 +70,10 @@ type tunnelInput struct {
 	CFTunnelID   string `json:"cf_tunnel_id,omitempty"`
 	AccountTag   string `json:"account_tag,omitempty"`
 	TunnelSecret string `json:"tunnel_secret,omitempty"`
+	// Cloudflare API token (Zone.DNS:Edit, Zone.Zone:Read) for auto-managing
+	// CNAME records that route hostnames to this tunnel. Optional — if empty,
+	// the operator manages DNS manually.
+	CFAPIToken string `json:"cf_api_token,omitempty"`
 }
 
 func (s *Server) apiCreateTunnel(w http.ResponseWriter, r *http.Request) {
@@ -116,7 +123,7 @@ func (s *Server) apiUpdateTunnel(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
 	}
-	// Preserve existing secret/cf id if not provided in this update
+	// Preserve existing secret/cf id/api token if not provided in this update
 	if merged.TunnelSecret == "" {
 		merged.TunnelSecret = existing.TunnelSecret
 	}
@@ -125,6 +132,9 @@ func (s *Server) apiUpdateTunnel(w http.ResponseWriter, r *http.Request) {
 	}
 	if merged.AccountTag == "" {
 		merged.AccountTag = existing.AccountTag
+	}
+	if merged.CFAPIToken == "" {
+		merged.CFAPIToken = existing.CFAPIToken
 	}
 	if err := s.db.UpdateTunnel(merged); err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
@@ -138,6 +148,58 @@ func (s *Server) apiUpdateTunnel(w http.ResponseWriter, r *http.Request) {
 		}()
 	}
 	writeJSON(w, http.StatusOK, toTunnelResponse(merged))
+}
+
+// apiListTunnelRoutes returns the (hostname, project, service, port) routes for
+// a tunnel along with each hostname's live DNS status (when an API token is set
+// on the tunnel). Synchronous — DNS lookups bounded by the cfapi client's 15s
+// per-call timeout plus a 30s overall budget inside Manager.RoutesFor.
+func (s *Server) apiListTunnelRoutes(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if _, err := s.db.GetTunnel(id); err != nil {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "tunnel not found"})
+		return
+	}
+	if s.tunnels == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "tunnel manager not initialised"})
+		return
+	}
+	routes, err := s.tunnels.RoutesFor(id)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	if routes == nil {
+		routes = []tunnel.Route{}
+	}
+	writeJSON(w, http.StatusOK, routes)
+}
+
+// apiSyncTunnel forces a reconcile: regenerate config.yml + credentials.json,
+// restart cloudflared if config changed, and (if API token present) push DNS
+// records to point at this tunnel. Useful after fixing a token's permissions
+// or when an existing CNAME points at the wrong tunnel and the operator wants
+// bbsit to take over.
+func (s *Server) apiSyncTunnel(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if _, err := s.db.GetTunnel(id); err != nil {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "tunnel not found"})
+		return
+	}
+	if s.tunnels == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "tunnel manager not initialised"})
+		return
+	}
+	// Reconcile is the synchronous part (writes config + restarts cloudflared);
+	// DNS sync is launched as a goroutine inside it. We block on the
+	// synchronous bit so the UI knows the file-level state is consistent before
+	// it re-fetches routes; the UI's RoutesFor call right after will re-check
+	// DNS regardless of the goroutine's progress.
+	if err := s.tunnels.ReconcileTunnel(id); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
 
 func (s *Server) apiDeleteTunnel(w http.ResponseWriter, r *http.Request) {
@@ -173,6 +235,7 @@ func buildTunnel(in *tunnelInput, isNew bool) (*types.Tunnel, error) {
 		CFTunnelID:   in.CFTunnelID,
 		AccountTag:   in.AccountTag,
 		TunnelSecret: in.TunnelSecret,
+		CFAPIToken:   strings.TrimSpace(in.CFAPIToken),
 		Enabled:      true,
 	}
 	if in.Enabled != nil {

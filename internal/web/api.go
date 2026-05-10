@@ -1,6 +1,7 @@
 package web
 
 import (
+	"bufio"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -245,41 +246,58 @@ func (s *Server) apiStart(w http.ResponseWriter, r *http.Request) {
 // --- YAML / tar.gz import ---
 
 func (s *Server) apiImportProject(w http.ResponseWriter, r *http.Request) {
-	var data []byte
-	var err error
-
-	ct := r.Header.Get("Content-Type")
-	if strings.HasPrefix(ct, "multipart/form-data") {
-		r.ParseMultipartForm(64 << 20) // 64 MB (tarballs can include data dirs)
-		f, _, ferr := r.FormFile("file")
-		if ferr != nil {
-			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "missing file field"})
-			return
-		}
-		defer f.Close()
-		data, err = io.ReadAll(f)
-		if err != nil {
-			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "could not read file"})
-			return
-		}
-	} else {
-		data, err = io.ReadAll(r.Body)
-		if err != nil {
-			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "could not read body"})
-			return
-		}
-	}
-
-	// Detect format: gzip magic vs YAML
-	if len(data) >= 2 && data[0] == 0x1f && data[1] == 0x8b {
-		s.importTarball(w, data)
+	body, err := importBodyReader(r)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
 	}
+	if c, ok := body.(io.Closer); ok {
+		defer c.Close()
+	}
 
-	s.importYAML(w, data)
+	// Sniff first 2 bytes to detect gzip vs YAML without buffering the whole body.
+	br := bufio.NewReader(body)
+	magic, _ := br.Peek(2)
+	if len(magic) >= 2 && magic[0] == 0x1f && magic[1] == 0x8b {
+		s.importTarball(w, br)
+		return
+	}
+	s.importYAML(w, br)
 }
 
-func (s *Server) importYAML(w http.ResponseWriter, data []byte) {
+// importBodyReader returns a reader for the import payload — either the raw
+// request body or the first multipart "file" part. The caller is responsible
+// for closing the returned reader if it implements io.Closer.
+func importBodyReader(r *http.Request) (io.Reader, error) {
+	ct := r.Header.Get("Content-Type")
+	if !strings.HasPrefix(ct, "multipart/form-data") {
+		return r.Body, nil
+	}
+	mr, err := r.MultipartReader()
+	if err != nil {
+		return nil, fmt.Errorf("multipart: %w", err)
+	}
+	for {
+		part, err := mr.NextPart()
+		if err == io.EOF {
+			return nil, fmt.Errorf("missing file field")
+		}
+		if err != nil {
+			return nil, fmt.Errorf("multipart: %w", err)
+		}
+		if part.FormName() == "file" {
+			return part, nil
+		}
+		part.Close()
+	}
+}
+
+func (s *Server) importYAML(w http.ResponseWriter, r io.Reader) {
+	data, err := io.ReadAll(r)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "read body: " + err.Error()})
+		return
+	}
 	p := &types.Project{}
 	if err := yaml.Unmarshal(data, p); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid YAML: " + err.Error()})

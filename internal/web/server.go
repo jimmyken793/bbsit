@@ -72,6 +72,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/tunnels", s.apiAuth(s.apiListTunnels))
 	mux.HandleFunc("POST /api/tunnels", s.apiAuth(s.apiCreateTunnel))
 	mux.HandleFunc("GET /api/tunnels/{id}", s.apiAuth(s.apiGetTunnel))
+	mux.HandleFunc("GET /api/tunnels/{id}/routes", s.apiAuth(s.apiListTunnelRoutes))
+	mux.HandleFunc("POST /api/tunnels/{id}/sync", s.apiAuth(s.apiSyncTunnel))
 	mux.HandleFunc("PUT /api/tunnels/{id}", s.apiAuth(s.apiUpdateTunnel))
 	mux.HandleFunc("DELETE /api/tunnels/{id}", s.apiAuth(s.apiDeleteTunnel))
 

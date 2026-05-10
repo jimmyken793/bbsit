@@ -331,6 +331,7 @@ func cmdPack(c *client, args []string) error {
 		return fmt.Errorf("usage: bbsit-ctl pack <project-id> [-o file.tar.gz]")
 	}
 
+	fmt.Fprintf(os.Stderr, "packing %s...\n", id)
 	resp, err := c.do("GET", "/api/projects/"+url.PathEscape(id)+"/export?format=tar.gz", nil, "")
 	if err != nil {
 		return err
@@ -352,11 +353,22 @@ func cmdPack(c *client, args []string) error {
 		// Don't dump binary to a TTY
 		return fmt.Errorf("refusing to write tarball to terminal — use -o <file>")
 	}
-	_, err = io.Copy(out, resp.Body)
-	if err == nil && outPath != "" {
+
+	// Prefer Content-Length if the server provided it; otherwise show bytes only.
+	total := resp.ContentLength
+	if total < 0 {
+		total = 0
+	}
+	meter := newProgressMeter("pack", total)
+	_, err = io.Copy(io.MultiWriter(out, meter), resp.Body)
+	meter.Finish()
+	if err != nil {
+		return err
+	}
+	if outPath != "" {
 		fmt.Fprintf(os.Stderr, "wrote: %s\n", outPath)
 	}
-	return err
+	return nil
 }
 
 func cmdUnpack(c *client, args []string) error {
@@ -368,23 +380,33 @@ func cmdUnpack(c *client, args []string) error {
 	// Server auto-detects YAML vs gzip via magic bytes, so content-type only
 	// matters when the request body is empty (it isn't here).
 	var body io.Reader
+	var total int64 // 0 if unknown (e.g. stdin)
 	contentType := "application/octet-stream"
 	if path == "-" {
 		body = os.Stdin
+		fmt.Fprintln(os.Stderr, "uploading from stdin...")
 	} else {
 		f, err := os.Open(path)
 		if err != nil {
 			return err
 		}
 		defer f.Close()
+		if fi, err := f.Stat(); err == nil {
+			total = fi.Size()
+		}
 		body = f
 		contentType = "application/x-yaml"
 		if strings.HasSuffix(path, ".tar.gz") || strings.HasSuffix(path, ".tgz") {
 			contentType = "application/gzip"
 		}
+		fmt.Fprintf(os.Stderr, "uploading %s (%s)...\n", path, humanBytes(total))
 	}
 
+	meter := newProgressMeter("upload", total)
+	body = io.TeeReader(body, meter)
+
 	resp, err := c.do("POST", "/api/projects/import", body, contentType)
+	meter.Finish()
 	if err != nil {
 		return err
 	}
@@ -392,6 +414,7 @@ func cmdUnpack(c *client, args []string) error {
 	if resp.StatusCode >= 400 {
 		return apiError(resp)
 	}
+	fmt.Fprintln(os.Stderr, "server: extracting bundle and upserting project...")
 	var p map[string]any
 	if err := json.NewDecoder(resp.Body).Decode(&p); err == nil {
 		if id, ok := p["id"].(string); ok {
@@ -401,6 +424,85 @@ func cmdUnpack(c *client, args []string) error {
 	}
 	fmt.Println("imported")
 	return nil
+}
+
+// progressMeter prints a one-line progress update to stderr at most once per
+// tick. If total > 0, it includes a percentage and ETA. On a TTY it uses
+// carriage returns to redraw in place; otherwise it emits a newline per tick.
+type progressMeter struct {
+	label   string
+	total   int64 // 0 if unknown
+	written int64
+	start   time.Time
+	last    time.Time
+	tty     bool
+}
+
+func newProgressMeter(label string, total int64) *progressMeter {
+	now := time.Now()
+	return &progressMeter{
+		label: label,
+		total: total,
+		start: now,
+		last:  now.Add(-time.Second), // force first tick
+		tty:   isTerminal(os.Stderr),
+	}
+}
+
+func (p *progressMeter) Write(b []byte) (int, error) {
+	n := len(b)
+	p.written += int64(n)
+	p.tick(false)
+	return n, nil
+}
+
+func (p *progressMeter) tick(force bool) {
+	now := time.Now()
+	if !force && now.Sub(p.last) < time.Second {
+		return
+	}
+	p.last = now
+	elapsed := now.Sub(p.start).Seconds()
+	rate := float64(p.written) / elapsed
+	if elapsed < 0.05 {
+		rate = 0
+	}
+	var line string
+	if p.total > 0 {
+		pct := 100 * float64(p.written) / float64(p.total)
+		line = fmt.Sprintf("%s: %s / %s (%.1f%%) at %s/s",
+			p.label, humanBytes(p.written), humanBytes(p.total), pct, humanBytes(int64(rate)))
+	} else {
+		line = fmt.Sprintf("%s: %s at %s/s", p.label, humanBytes(p.written), humanBytes(int64(rate)))
+	}
+	if p.tty {
+		fmt.Fprintf(os.Stderr, "\r\033[K%s", line)
+	} else {
+		fmt.Fprintln(os.Stderr, line)
+	}
+}
+
+func (p *progressMeter) Finish() {
+	p.tick(true)
+	elapsed := time.Since(p.start)
+	if p.tty {
+		fmt.Fprintln(os.Stderr) // end the in-place line
+	}
+	fmt.Fprintf(os.Stderr, "%s: done — %s in %s\n",
+		p.label, humanBytes(p.written), elapsed.Round(time.Millisecond))
+}
+
+func humanBytes(n int64) string {
+	const u = 1024
+	if n < u {
+		return fmt.Sprintf("%d B", n)
+	}
+	div, exp := int64(u), 0
+	for x := n / u; x >= u; x /= u {
+		div *= u
+		exp++
+	}
+	return fmt.Sprintf("%.1f %cB", float64(n)/float64(div), "KMGTPE"[exp])
 }
 
 // isTerminal reports whether f is connected to a terminal.

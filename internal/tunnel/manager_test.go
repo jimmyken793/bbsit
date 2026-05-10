@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/kingyoung/bbsit/internal/cfapi"
 	"github.com/kingyoung/bbsit/internal/types"
 )
 
@@ -88,13 +89,15 @@ func TestWriteCredentials(t *testing.T) {
 		t.Errorf("creds round-trip mismatch: %+v", creds)
 	}
 
-	// File should be 0600 (only owner can read secrets)
+	// File should be 0644 — readable by the cloudflared container's nonroot
+	// user via bind mount. On-host secrecy is enforced by stack directory
+	// permissions, not file permissions.
 	info, err := os.Stat(filepath.Join(dir, "credentials.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if info.Mode().Perm() != 0600 {
-		t.Errorf("credentials.json perm = %v, want 0600", info.Mode().Perm())
+	if info.Mode().Perm() != 0644 {
+		t.Errorf("credentials.json perm = %v, want 0644", info.Mode().Perm())
 	}
 }
 
@@ -119,6 +122,61 @@ func TestBuildSystemProject(t *testing.T) {
 	}
 	if len(svc.Volumes) != 2 {
 		t.Errorf("expected 2 volumes (config + creds), got %d", len(svc.Volumes))
+	}
+}
+
+func TestClassifyDNS(t *testing.T) {
+	const target = "abc-uuid.cfargotunnel.com"
+
+	cases := []struct {
+		name string
+		recs []cfapi.DNSRecord
+		want string
+	}{
+		{
+			name: "ok proxied CNAME at target",
+			recs: []cfapi.DNSRecord{{Type: "CNAME", Content: target, Proxied: true}},
+			want: "ok",
+		},
+		{
+			name: "CNAME correct but unproxied",
+			recs: []cfapi.DNSRecord{{Type: "CNAME", Content: target, Proxied: false}},
+			want: "not_proxied",
+		},
+		{
+			name: "CNAME pointing somewhere else",
+			recs: []cfapi.DNSRecord{{Type: "CNAME", Content: "other.example.com", Proxied: true}},
+			want: "wrong_target",
+		},
+		{
+			name: "A record at name (legacy origin)",
+			recs: []cfapi.DNSRecord{{Type: "A", Content: "203.0.113.10", Proxied: true}},
+			want: "wrong_type",
+		},
+		{
+			name: "no records at all",
+			recs: nil,
+			want: "missing",
+		},
+		{
+			name: "only TXT — treat as missing for routing",
+			recs: []cfapi.DNSRecord{{Type: "TXT", Content: "v=spf1 ..."}},
+			want: "missing",
+		},
+		{
+			name: "CNAME wins over coexisting TXT",
+			recs: []cfapi.DNSRecord{
+				{Type: "TXT", Content: "v=spf1 ..."},
+				{Type: "CNAME", Content: target, Proxied: true},
+			},
+			want: "ok",
+		},
+	}
+	for _, c := range cases {
+		got := classifyDNS(target, c.recs)
+		if got.Status != c.want {
+			t.Errorf("%s: status = %q, want %q (full: %+v)", c.name, got.Status, c.want, got)
+		}
 	}
 }
 

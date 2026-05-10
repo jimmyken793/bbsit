@@ -67,8 +67,34 @@ export interface Tunnel {
   account_tag: string
   enabled: boolean
   has_secret: boolean
+  has_api_token: boolean
   created_at?: string
   updated_at?: string
+}
+
+export type TunnelRouteDNSStatus =
+  | 'ok'
+  | 'wrong_target'
+  | 'not_proxied'
+  | 'wrong_type'
+  | 'missing'
+  | 'no_zone'
+  | 'no_token'
+  | 'error'
+
+export interface TunnelRoute {
+  hostname: string
+  project_id: string
+  service: string
+  port: number
+  dns: {
+    status: TunnelRouteDNSStatus
+    expected_target?: string
+    actual_target?: string
+    actual_type?: string
+    proxied?: boolean
+    error?: string
+  }
 }
 
 export interface TunnelInput {
@@ -79,6 +105,7 @@ export interface TunnelInput {
   cf_tunnel_id?: string
   account_tag?: string
   tunnel_secret?: string
+  cf_api_token?: string // Zone.DNS:Edit + Zone.Zone:Read for auto-CNAME
 }
 
 export interface ProjectState {

@@ -105,6 +105,13 @@ func WriteComposeFiles(p *types.Project, imageOverrides map[string]string) error
 			if !filepath.IsAbs(hostPath) {
 				hostPath = filepath.Join(p.StackPath, hostPath)
 			}
+			// If the host path already exists, leave it alone — it may be a
+			// file bind-mount (e.g. cloudflared's config.yml), not a directory.
+			if _, err := os.Stat(hostPath); err == nil {
+				continue
+			} else if !os.IsNotExist(err) {
+				return fmt.Errorf("stat volume %s: %w", hostPath, err)
+			}
 			if err := os.MkdirAll(hostPath, 0755); err != nil {
 				return fmt.Errorf("mkdir volume %s: %w", hostPath, err)
 			}

@@ -114,8 +114,18 @@ export default function ProjectDetailPage() {
           </h2>
           <div className="text-muted" style={{ fontSize: 12 }}>{p.id}</div>
         </div>
-        <Link to={`/projects/${p.id}/edit`} className="btn btn-outline btn-sm">Edit</Link>
+        {!p.is_system && (
+          <Link to={`/projects/${p.id}/edit`} className="btn btn-outline btn-sm">Edit</Link>
+        )}
       </div>
+
+      {p.is_system && (
+        <div className="alert alert-info">
+          This is a <strong>system project</strong> managed by bbsit (cloudflared tunnel runner).
+          Configuration is regenerated automatically from tunnel and project settings — edit the
+          tunnel or its routed projects instead.
+        </div>
+      )}
 
       {actionError && <div className="alert alert-danger">{actionError}</div>}
 
@@ -170,9 +180,11 @@ export default function ProjectDetailPage() {
         >
           ↓ Export YAML
         </a>
-        <button className="btn btn-danger btn-sm" onClick={handleDelete}>
-          🗑 Delete
-        </button>
+        {!p.is_system && (
+          <button className="btn btn-danger btn-sm" onClick={handleDelete}>
+            🗑 Delete
+          </button>
+        )}
       </div>
 
       {logLines.length > 0 && (
