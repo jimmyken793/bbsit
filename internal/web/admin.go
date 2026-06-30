@@ -38,6 +38,12 @@ func (s *Server) AdminMux() http.Handler {
 	mux.HandleFunc("DELETE /api/projects/{id}", s.apiDeleteProject)
 	mux.HandleFunc("POST /api/projects/import", s.apiImportProject)
 
+	// Backup / restore (sync — these can stream for minutes for large projects)
+	mux.HandleFunc("POST /api/projects/{id}/backup", s.apiAdminBackup)
+	mux.HandleFunc("GET /api/projects/{id}/backups", s.apiAdminListBackups)
+	mux.HandleFunc("GET /api/projects/{id}/backup-runs", s.apiAdminBackupHistory)
+	mux.HandleFunc("POST /api/projects/{id}/restore", s.apiAdminRestore)
+
 	return mux
 }
 

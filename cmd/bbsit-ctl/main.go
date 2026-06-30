@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -52,6 +53,12 @@ func main() {
 		err = cmdPack(c, args)
 	case "unpack", "import":
 		err = cmdUnpack(c, args)
+	case "backup":
+		err = cmdBackup(c, args)
+	case "backups":
+		err = cmdListBackups(c, args)
+	case "restore":
+		err = cmdRestore(c, args)
 	case "-h", "--help", "help":
 		usage()
 		return
@@ -79,6 +86,12 @@ Commands:
   export <id>                  Print the project definition as YAML
   pack <id> [-o file.tar.gz]   Pack project + persistent data into a tarball
   unpack <file|->              Restore a project from YAML/tar.gz file (or stdin if -)
+  backup <id>                  Run the project's configured backup_command
+  backups <id>                 List backup files in the project's backups/ dir
+  restore <id> <file> [--as <new-id>]
+                               Run restore_command against a backup file. With --as,
+                               clone the project to a fresh ID with random ports
+                               and restore there (smoke-tests the backup).
 
 Environment:
   BBSIT_SOCKET   Path to bbsit admin socket (default: /run/bbsit/admin.sock)`)
@@ -423,6 +436,125 @@ func cmdUnpack(c *client, args []string) error {
 		}
 	}
 	fmt.Println("imported")
+	return nil
+}
+
+// --- backup / restore ---
+
+type backupRun struct {
+	ID        int64      `json:"id"`
+	ProjectID string     `json:"project_id"`
+	Status    string     `json:"status"`
+	FilePath  string     `json:"file_path,omitempty"`
+	Bytes     int64      `json:"bytes,omitempty"`
+	SHA256    string     `json:"sha256,omitempty"`
+	StartedAt time.Time  `json:"started_at"`
+	EndedAt   *time.Time `json:"ended_at,omitempty"`
+	Error     string     `json:"error,omitempty"`
+}
+
+type backupFile struct {
+	Name     string    `json:"name"`
+	Path     string    `json:"path"`
+	Bytes    int64     `json:"bytes"`
+	Modified time.Time `json:"modified"`
+}
+
+func cmdBackup(c *client, args []string) error {
+	if len(args) == 0 {
+		return fmt.Errorf("usage: bbsit-ctl backup <project-id>")
+	}
+	id := args[0]
+	fmt.Fprintf(os.Stderr, "running backup for %s...\n", id)
+
+	resp, err := c.do("POST", "/api/projects/"+url.PathEscape(id)+"/backup", nil, "")
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 400 {
+		return apiError(resp)
+	}
+	var run backupRun
+	if err := json.NewDecoder(resp.Body).Decode(&run); err != nil {
+		return fmt.Errorf("decode response: %w", err)
+	}
+	fmt.Printf("%s\n", run.FilePath)
+	if run.Bytes > 0 {
+		fmt.Fprintf(os.Stderr, "size: %s   sha256: %s\n", humanBytes(run.Bytes), run.SHA256)
+	}
+	return nil
+}
+
+func cmdListBackups(c *client, args []string) error {
+	if len(args) == 0 {
+		return fmt.Errorf("usage: bbsit-ctl backups <project-id>")
+	}
+	id := args[0]
+	var files []backupFile
+	if err := c.getJSON("/api/projects/"+url.PathEscape(id)+"/backups", &files); err != nil {
+		return err
+	}
+	if len(files) == 0 {
+		fmt.Fprintln(os.Stderr, "no backups found")
+		return nil
+	}
+	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+	fmt.Fprintln(w, "MODIFIED\tSIZE\tNAME\tPATH")
+	for _, f := range files {
+		fmt.Fprintf(w, "%s\t%s\t%s\t%s\n",
+			f.Modified.Local().Format("2006-01-02 15:04"), humanBytes(f.Bytes), f.Name, f.Path)
+	}
+	return w.Flush()
+}
+
+func cmdRestore(c *client, args []string) error {
+	var id, file, asID string
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		switch a {
+		case "--as":
+			if i+1 >= len(args) {
+				return fmt.Errorf("--as requires a project id")
+			}
+			asID = args[i+1]
+			i++
+		default:
+			if id == "" {
+				id = a
+			} else if file == "" {
+				file = a
+			} else {
+				return fmt.Errorf("unexpected argument: %s", a)
+			}
+		}
+	}
+	if id == "" || file == "" {
+		return fmt.Errorf("usage: bbsit-ctl restore <project-id> <file> [--as <new-id>]")
+	}
+
+	body, _ := json.Marshal(map[string]string{"file": file, "as": asID})
+	if asID == "" {
+		fmt.Fprintf(os.Stderr, "restoring %s from %s...\n", id, file)
+	} else {
+		fmt.Fprintf(os.Stderr, "verify-restore: cloning %s as %s with random ports, then restoring %s...\n", id, asID, file)
+	}
+
+	resp, err := c.do("POST", "/api/projects/"+url.PathEscape(id)+"/restore", bytes.NewReader(body), "application/json")
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 400 {
+		return apiError(resp)
+	}
+	var out map[string]any
+	json.NewDecoder(resp.Body).Decode(&out)
+	if msg, ok := out["message"].(string); ok && msg != "" {
+		fmt.Println(msg)
+	} else {
+		fmt.Println("ok")
+	}
 	return nil
 }
 

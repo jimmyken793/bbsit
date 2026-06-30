@@ -40,7 +40,7 @@ func adminTestServer(t *testing.T) (*Server, *httptest.Server, string) {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	dep := deployer.New(database, logger, "docker")
 	sched := scheduler.New(database, dep, logger, "docker")
-	srv := NewServer(database, dep, sched, nil, logger, stackRoot)
+	srv := NewServer(database, dep, sched, nil, nil, logger, stackRoot)
 	ts := httptest.NewServer(srv.AdminMux())
 	t.Cleanup(ts.Close)
 	return srv, ts, stackRoot

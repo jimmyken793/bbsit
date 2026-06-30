@@ -144,6 +144,57 @@ type VolumeMount struct {
 	ReadOnly      bool   `json:"readonly,omitempty" yaml:"readonly,omitempty"`
 }
 
+// BackupSpec describes how to take an application-aware backup of a project.
+//
+// bbsit triggers backup_command inside the named compose service; the command
+// is expected to write its dump to output_path (which must be a directory
+// inside the container). bbsit auto-mounts {StackPath}/backups → output_path
+// so the resulting file is visible on the host for external sync tools to
+// pick up.
+//
+// restore_command, if set, receives the absolute container-side path to the
+// backup file via the environment variable BBSIT_BACKUP_FILE.
+type BackupSpec struct {
+	Service        string `json:"service" yaml:"service"`                                     // compose service name (e.g. "gitlab")
+	BackupCommand  string `json:"backup_command" yaml:"backup_command"`                       // shell command run inside the container
+	RestoreCommand string `json:"restore_command,omitempty" yaml:"restore_command,omitempty"` // shell command for restore; receives $BBSIT_BACKUP_FILE
+	OutputPath     string `json:"output_path" yaml:"output_path"`                             // directory inside container for backup files (mounted to host)
+	OutputPattern  string `json:"output_pattern,omitempty" yaml:"output_pattern,omitempty"`   // glob to identify backup files (default: "*")
+	User           string `json:"user,omitempty" yaml:"user,omitempty"`                       // optional --user for exec (e.g. "git")
+	TimeoutSec     int    `json:"timeout_sec,omitempty" yaml:"timeout_sec,omitempty"`         // timeout for backup/restore exec (default: 3600)
+}
+
+// BackupStatus tracks the lifecycle of a single backup run.
+type BackupStatus string
+
+const (
+	BackupInProgress BackupStatus = "in_progress"
+	BackupSuccess    BackupStatus = "success"
+	BackupFailed     BackupStatus = "failed"
+)
+
+// BackupRun records a single execution of a project's backup command.
+type BackupRun struct {
+	ID        int64        `json:"id"`
+	ProjectID string       `json:"project_id"`
+	Status    BackupStatus `json:"status"`
+	Trigger   string       `json:"trigger"` // "manual" | "scheduled" | "verify"
+	FilePath  string       `json:"file_path,omitempty"`
+	Bytes     int64        `json:"bytes,omitempty"`
+	SHA256    string       `json:"sha256,omitempty"`
+	StartedAt time.Time    `json:"started_at"`
+	EndedAt   *time.Time   `json:"ended_at,omitempty"`
+	Error     string       `json:"error,omitempty"`
+}
+
+// BackupFile is a single backup file present in the project's host backup dir.
+type BackupFile struct {
+	Name     string    `json:"name"`
+	Path     string    `json:"path"`
+	Bytes    int64     `json:"bytes"`
+	Modified time.Time `json:"modified"`
+}
+
 // PublicHostname maps a Cloudflare tunnel hostname to a host port.
 // cloudflared will route hostname → http://localhost:port (host network).
 type PublicHostname struct {
@@ -199,8 +250,22 @@ type Project struct {
 	// System projects are hidden from the dashboard by default.
 	IsSystem bool `json:"is_system,omitempty"`
 
+	// Backup describes how to take an application-aware backup of this project.
+	// nil means no backup command configured.
+	Backup *BackupSpec `json:"backup,omitempty" yaml:"backup,omitempty"`
+
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
+}
+
+// BackupHostDir returns the host-side directory where backup files land for
+// this project. It is always {StackPath}/backups; the caller is responsible
+// for creating it.
+func (p *Project) BackupHostDir() string {
+	if p.StackPath == "" {
+		return ""
+	}
+	return p.StackPath + "/backups"
 }
 
 // Tunnel represents a Cloudflare tunnel managed by bbsit.

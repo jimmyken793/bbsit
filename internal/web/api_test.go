@@ -29,7 +29,7 @@ func testServer(t *testing.T) (*Server, *httptest.Server) {
 	sched := scheduler.New(database, dep, logger, "docker")
 	stackRoot := t.TempDir()
 
-	srv := NewServer(database, dep, sched, nil, logger, stackRoot)
+	srv := NewServer(database, dep, sched, nil, nil, logger, stackRoot)
 	ts := httptest.NewServer(srv.Handler())
 	t.Cleanup(ts.Close)
 

@@ -442,6 +442,55 @@ func (s *Server) validateAndDefaultProject(p *types.Project, isNew bool) error {
 		}
 	}
 
+	if err := validateAndInjectBackup(p); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+// validateAndInjectBackup checks BackupSpec referential integrity and, when
+// configured, ensures the host-side backups dir is mounted into the target
+// service at output_path. The mount is added with a relative host path
+// ("backups") so it's portable across hosts and survives a pack/unpack.
+func validateAndInjectBackup(p *types.Project) error {
+	if p.Backup == nil {
+		return nil
+	}
+	b := p.Backup
+	if b.Service == "" {
+		return fmt.Errorf("backup.service required")
+	}
+	if b.BackupCommand == "" {
+		return fmt.Errorf("backup.backup_command required")
+	}
+	if b.OutputPath == "" {
+		return fmt.Errorf("backup.output_path required")
+	}
+	if !filepath.IsAbs(b.OutputPath) {
+		return fmt.Errorf("backup.output_path must be absolute (got %q)", b.OutputPath)
+	}
+
+	var target *types.ServiceConfig
+	for i := range p.Services {
+		if p.Services[i].Name == b.Service {
+			target = &p.Services[i]
+			break
+		}
+	}
+	if target == nil {
+		return fmt.Errorf("backup.service %q not found among services", b.Service)
+	}
+
+	for _, v := range target.Volumes {
+		if filepath.Clean(v.ContainerPath) == filepath.Clean(b.OutputPath) {
+			return nil // operator already wired it up — leave alone
+		}
+	}
+	target.Volumes = append(target.Volumes, types.VolumeMount{
+		HostPath:      "backups",
+		ContainerPath: b.OutputPath,
+	})
 	return nil
 }
 

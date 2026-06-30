@@ -10,9 +10,11 @@ import (
 	"os/signal"
 	"syscall"
 
+	"github.com/kingyoung/bbsit/internal/backup"
 	"github.com/kingyoung/bbsit/internal/config"
 	"github.com/kingyoung/bbsit/internal/db"
 	"github.com/kingyoung/bbsit/internal/deployer"
+	bbruntime "github.com/kingyoung/bbsit/internal/runtime"
 	"github.com/kingyoung/bbsit/internal/scheduler"
 	"github.com/kingyoung/bbsit/internal/tunnel"
 	"github.com/kingyoung/bbsit/internal/web"
@@ -57,6 +59,10 @@ func main() {
 		logger.Error("reset stale states", "error", err)
 		os.Exit(1)
 	}
+	if err := database.ResetStaleBackups(); err != nil {
+		logger.Error("reset stale backups", "error", err)
+		os.Exit(1)
+	}
 
 	// Resolve container runtime (docker or podman)
 	runtime, err := cfg.ResolvedRuntime()
@@ -73,6 +79,9 @@ func main() {
 	// Tunnel manager — owns cloudflared system projects + ingress reconciliation
 	tm := tunnel.NewManager(database, dep, logger, cfg.StackRoot, runtime)
 
+	// Backup service — orchestrates application-aware backup/restore via compose exec.
+	bk := backup.New(database, bbruntime.New(runtime), logger)
+
 	// Start scheduler
 	sched.Start()
 	defer sched.Stop()
@@ -85,7 +94,7 @@ func main() {
 	}()
 
 	// Create web server
-	srv := web.NewServer(database, dep, sched, tm, logger, cfg.StackRoot)
+	srv := web.NewServer(database, dep, sched, tm, bk, logger, cfg.StackRoot)
 
 	// Start HTTP server
 	httpServer := &http.Server{

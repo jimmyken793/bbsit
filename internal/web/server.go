@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/kingyoung/bbsit/internal/backup"
 	"github.com/kingyoung/bbsit/internal/db"
 	"github.com/kingyoung/bbsit/internal/deployer"
 	"github.com/kingyoung/bbsit/internal/scheduler"
@@ -24,13 +25,14 @@ type Server struct {
 	deployer  *deployer.Deployer
 	scheduler *scheduler.Scheduler
 	tunnels   *tunnel.Manager
+	backups   *backup.Service
 	log       *slog.Logger
 	sessions  sync.Map // token -> expiry
 	stackRoot string
 	hub       *Hub
 }
 
-func NewServer(database *db.DB, dep *deployer.Deployer, sched *scheduler.Scheduler, tm *tunnel.Manager, logger *slog.Logger, stackRoot string) *Server {
+func NewServer(database *db.DB, dep *deployer.Deployer, sched *scheduler.Scheduler, tm *tunnel.Manager, bk *backup.Service, logger *slog.Logger, stackRoot string) *Server {
 	h := NewHub()
 	go h.Run()
 	dep.AddListener(h)
@@ -40,6 +42,7 @@ func NewServer(database *db.DB, dep *deployer.Deployer, sched *scheduler.Schedul
 		deployer:  dep,
 		scheduler: sched,
 		tunnels:   tm,
+		backups:   bk,
 		log:       logger,
 		stackRoot: stackRoot,
 		hub:       h,

@@ -519,6 +519,147 @@ func TestProjectWithServices(t *testing.T) {
 	}
 }
 
+func TestBackupSpecRoundTrip(t *testing.T) {
+	db := openTestDB(t)
+	p := sampleProject("proj-bk")
+	p.Backup = &types.BackupSpec{
+		Service:        "proj-bk",
+		BackupCommand:  "tar czf /var/backups/x.tgz /data",
+		RestoreCommand: "tar xzf $BBSIT_BACKUP_FILE -C /",
+		OutputPath:     "/var/backups",
+		OutputPattern:  "*.tgz",
+		User:           "1000:1000",
+		TimeoutSec:     1800,
+	}
+
+	if err := db.CreateProject(p); err != nil {
+		t.Fatalf("CreateProject: %v", err)
+	}
+	got, err := db.GetProject("proj-bk")
+	if err != nil {
+		t.Fatalf("GetProject: %v", err)
+	}
+	if got.Backup == nil {
+		t.Fatalf("Backup is nil after round-trip")
+	}
+	if got.Backup.BackupCommand != p.Backup.BackupCommand {
+		t.Errorf("BackupCommand = %q, want %q", got.Backup.BackupCommand, p.Backup.BackupCommand)
+	}
+	if got.Backup.OutputPattern != "*.tgz" {
+		t.Errorf("OutputPattern = %q", got.Backup.OutputPattern)
+	}
+	if got.Backup.TimeoutSec != 1800 {
+		t.Errorf("TimeoutSec = %d", got.Backup.TimeoutSec)
+	}
+
+	// Update path: clearing Backup should round-trip to nil.
+	got.Backup = nil
+	if err := db.UpdateProject(got); err != nil {
+		t.Fatalf("UpdateProject: %v", err)
+	}
+	got2, _ := db.GetProject("proj-bk")
+	if got2.Backup != nil {
+		t.Errorf("Backup not cleared on update: %+v", got2.Backup)
+	}
+}
+
+func TestBackupRunsCRUD(t *testing.T) {
+	db := openTestDB(t)
+	p := sampleProject("proj-runs")
+	if err := db.CreateProject(p); err != nil {
+		t.Fatalf("CreateProject: %v", err)
+	}
+
+	run := &types.BackupRun{
+		ProjectID: "proj-runs",
+		Status:    types.BackupInProgress,
+		Trigger:   "manual",
+		StartedAt: time.Now().UTC(),
+	}
+	id, err := db.InsertBackupRun(run)
+	if err != nil {
+		t.Fatalf("InsertBackupRun: %v", err)
+	}
+	if id == 0 {
+		t.Fatal("got id=0")
+	}
+
+	if err := db.FinishBackupRun(id, types.BackupSuccess, "/tmp/x.tgz", "deadbeef", 12345, ""); err != nil {
+		t.Fatalf("FinishBackupRun: %v", err)
+	}
+	runs, err := db.ListBackupRuns("proj-runs", 10)
+	if err != nil {
+		t.Fatalf("ListBackupRuns: %v", err)
+	}
+	if len(runs) != 1 {
+		t.Fatalf("got %d runs, want 1", len(runs))
+	}
+	got := runs[0]
+	if got.Status != types.BackupSuccess {
+		t.Errorf("Status = %q, want success", got.Status)
+	}
+	if got.FilePath != "/tmp/x.tgz" || got.SHA256 != "deadbeef" || got.Bytes != 12345 {
+		t.Errorf("run fields wrong: %+v", got)
+	}
+	if got.EndedAt == nil {
+		t.Error("EndedAt should be set after FinishBackupRun")
+	}
+}
+
+func TestResetStaleBackups(t *testing.T) {
+	db := openTestDB(t)
+	p := sampleProject("proj-stale")
+	if err := db.CreateProject(p); err != nil {
+		t.Fatalf("CreateProject: %v", err)
+	}
+	id, err := db.InsertBackupRun(&types.BackupRun{
+		ProjectID: "proj-stale",
+		Status:    types.BackupInProgress,
+		Trigger:   "manual",
+		StartedAt: time.Now().UTC(),
+	})
+	if err != nil {
+		t.Fatalf("InsertBackupRun: %v", err)
+	}
+
+	if err := db.ResetStaleBackups(); err != nil {
+		t.Fatalf("ResetStaleBackups: %v", err)
+	}
+	runs, _ := db.ListBackupRuns("proj-stale", 10)
+	if len(runs) != 1 || runs[0].ID != id {
+		t.Fatalf("expected one run with id %d, got %v", id, runs)
+	}
+	if runs[0].Status != types.BackupFailed {
+		t.Errorf("Status = %q, want failed", runs[0].Status)
+	}
+	if runs[0].Error == "" {
+		t.Error("Error message should be populated")
+	}
+}
+
+func TestBackupRunsCascadeOnProjectDelete(t *testing.T) {
+	db := openTestDB(t)
+	p := sampleProject("proj-cascade")
+	if err := db.CreateProject(p); err != nil {
+		t.Fatalf("CreateProject: %v", err)
+	}
+	if _, err := db.InsertBackupRun(&types.BackupRun{
+		ProjectID: "proj-cascade",
+		Status:    types.BackupSuccess,
+		Trigger:   "manual",
+		StartedAt: time.Now().UTC(),
+	}); err != nil {
+		t.Fatalf("InsertBackupRun: %v", err)
+	}
+	if err := db.DeleteProject("proj-cascade"); err != nil {
+		t.Fatalf("DeleteProject: %v", err)
+	}
+	runs, _ := db.ListBackupRuns("proj-cascade", 10)
+	if len(runs) != 0 {
+		t.Errorf("expected runs to cascade-delete, got %d", len(runs))
+	}
+}
+
 func TestListProjectsWithState(t *testing.T) {
 	db := openTestDB(t)
 

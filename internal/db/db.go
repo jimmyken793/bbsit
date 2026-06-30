@@ -57,6 +57,11 @@ func (db *DB) migrate() error {
 	}
 	// v6: add cf_api_token to tunnels for DNS auto-routing
 	db.conn.Exec(`ALTER TABLE tunnels ADD COLUMN cf_api_token TEXT NOT NULL DEFAULT ''`)
+	// v7: per-project backup spec + backup_runs history
+	db.conn.Exec(`ALTER TABLE projects ADD COLUMN backup TEXT DEFAULT ''`)
+	if _, err := db.conn.Exec(schemaV7BackupRuns); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -300,6 +305,22 @@ CREATE TABLE IF NOT EXISTS auth (
 );
 `
 
+const schemaV7BackupRuns = `
+CREATE TABLE IF NOT EXISTS backup_runs (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    project_id      TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    status          TEXT NOT NULL,
+    trigger_type    TEXT NOT NULL DEFAULT 'manual',
+    file_path       TEXT DEFAULT '',
+    bytes           INTEGER DEFAULT 0,
+    sha256          TEXT DEFAULT '',
+    started_at      TEXT NOT NULL,
+    ended_at        TEXT,
+    error_message   TEXT DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS idx_backup_runs_project ON backup_runs(project_id, started_at DESC);
+`
+
 const schemaV5Tunnels = `
 CREATE TABLE IF NOT EXISTS tunnels (
     id              TEXT PRIMARY KEY,
@@ -323,6 +344,7 @@ func (db *DB) CreateProject(p *types.Project) error {
 	if p.Services == nil {
 		svcJSON = []byte("[]")
 	}
+	backupJSON := marshalBackupSpec(p.Backup)
 	now := time.Now().UTC().Format(time.RFC3339)
 
 	tx, err := db.conn.Begin()
@@ -335,12 +357,12 @@ func (db *DB) CreateProject(p *types.Project) error {
 		INSERT INTO projects (id, display_name, config_mode,
 			registry_image, image_tag, ports, volumes, extra_options, bind_host,
 			custom_compose, stack_path, health_type, health_target,
-			poll_interval, enabled, env_vars, services, is_system, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			poll_interval, enabled, env_vars, services, is_system, backup, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		p.ID, p.DisplayName, p.ConfigMode,
 		p.RegistryImage, p.ImageTag, string(portsJSON), string(volsJSON), p.ExtraOptions, p.BindHost,
 		p.CustomCompose, p.StackPath, p.HealthType, p.HealthTarget,
-		p.PollInterval, p.Enabled, string(envJSON), string(svcJSON), boolToInt(p.IsSystem), now, now,
+		p.PollInterval, p.Enabled, string(envJSON), string(svcJSON), boolToInt(p.IsSystem), backupJSON, now, now,
 	)
 	if err != nil {
 		return fmt.Errorf("insert project: %w", err)
@@ -362,6 +384,7 @@ func (db *DB) UpdateProject(p *types.Project) error {
 	if p.Services == nil {
 		svcJSON = []byte("[]")
 	}
+	backupJSON := marshalBackupSpec(p.Backup)
 	now := time.Now().UTC().Format(time.RFC3339)
 
 	_, err := db.conn.Exec(`
@@ -369,12 +392,12 @@ func (db *DB) UpdateProject(p *types.Project) error {
 			display_name=?, config_mode=?,
 			registry_image=?, image_tag=?, ports=?, volumes=?, extra_options=?, bind_host=?,
 			custom_compose=?, stack_path=?, health_type=?, health_target=?,
-			poll_interval=?, enabled=?, env_vars=?, services=?, is_system=?, updated_at=?
+			poll_interval=?, enabled=?, env_vars=?, services=?, is_system=?, backup=?, updated_at=?
 		WHERE id=?`,
 		p.DisplayName, p.ConfigMode,
 		p.RegistryImage, p.ImageTag, string(portsJSON), string(volsJSON), p.ExtraOptions, p.BindHost,
 		p.CustomCompose, p.StackPath, p.HealthType, p.HealthTarget,
-		p.PollInterval, p.Enabled, string(envJSON), string(svcJSON), boolToInt(p.IsSystem), now,
+		p.PollInterval, p.Enabled, string(envJSON), string(svcJSON), boolToInt(p.IsSystem), backupJSON, now,
 		p.ID,
 	)
 	return err
@@ -388,7 +411,7 @@ func (db *DB) DeleteProject(id string) error {
 const projectColumns = `id, display_name, config_mode,
 	registry_image, image_tag, ports, volumes, extra_options, bind_host,
 	custom_compose, stack_path, health_type, health_target,
-	poll_interval, enabled, env_vars, services, is_system, created_at, updated_at`
+	poll_interval, enabled, env_vars, services, is_system, backup, created_at, updated_at`
 
 func (db *DB) GetProject(id string) (*types.Project, error) {
 	row := db.conn.QueryRow(`SELECT `+projectColumns+` FROM projects WHERE id=?`, id)
@@ -429,7 +452,7 @@ func (db *DB) ListProjectsWithState() ([]types.ProjectWithState, error) {
 	var result []types.ProjectWithState
 	for rows.Next() {
 		var ps types.ProjectWithState
-		var portsJSON, volsJSON, envJSON, svcJSON string
+		var portsJSON, volsJSON, envJSON, svcJSON, backupJSON string
 		var enabled, isSystem int
 		var createdAt, updatedAt string
 		var lastCheck, lastDeploy, lastSuccess sql.NullString
@@ -440,7 +463,7 @@ func (db *DB) ListProjectsWithState() ([]types.ProjectWithState, error) {
 			&ps.ID, &ps.DisplayName, (*string)(&ps.ConfigMode),
 			&ps.RegistryImage, &ps.ImageTag, &portsJSON, &volsJSON, &ps.ExtraOptions, &ps.BindHost,
 			&ps.CustomCompose, &ps.StackPath, (*string)(&ps.HealthType), &ps.HealthTarget,
-			&ps.PollInterval, &enabled, &envJSON, &svcJSON, &isSystem, &createdAt, &updatedAt,
+			&ps.PollInterval, &enabled, &envJSON, &svcJSON, &isSystem, &backupJSON, &createdAt, &updatedAt,
 			&curDigests, &prevDigests, &desDigests,
 			&status, &lastCheck, &lastDeploy, &lastSuccess, &lastErr,
 		)
@@ -452,6 +475,7 @@ func (db *DB) ListProjectsWithState() ([]types.ProjectWithState, error) {
 		json.Unmarshal([]byte(volsJSON), &ps.Volumes)
 		json.Unmarshal([]byte(envJSON), &ps.EnvVars)
 		json.Unmarshal([]byte(svcJSON), &ps.Services)
+		ps.Backup = unmarshalBackupSpec(backupJSON)
 		ps.Enabled = enabled == 1
 		ps.IsSystem = isSystem == 1
 		ps.CreatedAt, _ = time.Parse(time.RFC3339, createdAt)
@@ -691,14 +715,14 @@ func (db *DB) GetPasswordHash() (string, error) {
 
 func scanProject(row *sql.Row) (*types.Project, error) {
 	var p types.Project
-	var portsJSON, volsJSON, envJSON, svcJSON string
+	var portsJSON, volsJSON, envJSON, svcJSON, backupJSON string
 	var enabled, isSystem int
 	var createdAt, updatedAt string
 	err := row.Scan(
 		&p.ID, &p.DisplayName, (*string)(&p.ConfigMode),
 		&p.RegistryImage, &p.ImageTag, &portsJSON, &volsJSON, &p.ExtraOptions, &p.BindHost,
 		&p.CustomCompose, &p.StackPath, (*string)(&p.HealthType), &p.HealthTarget,
-		&p.PollInterval, &enabled, &envJSON, &svcJSON, &isSystem, &createdAt, &updatedAt,
+		&p.PollInterval, &enabled, &envJSON, &svcJSON, &isSystem, &backupJSON, &createdAt, &updatedAt,
 	)
 	if err != nil {
 		return nil, err
@@ -707,6 +731,7 @@ func scanProject(row *sql.Row) (*types.Project, error) {
 	json.Unmarshal([]byte(volsJSON), &p.Volumes)
 	json.Unmarshal([]byte(envJSON), &p.EnvVars)
 	json.Unmarshal([]byte(svcJSON), &p.Services)
+	p.Backup = unmarshalBackupSpec(backupJSON)
 	p.Enabled = enabled == 1
 	p.IsSystem = isSystem == 1
 	p.CreatedAt, _ = time.Parse(time.RFC3339, createdAt)
@@ -716,14 +741,14 @@ func scanProject(row *sql.Row) (*types.Project, error) {
 
 func scanProjectRows(rows *sql.Rows) (*types.Project, error) {
 	var p types.Project
-	var portsJSON, volsJSON, envJSON, svcJSON string
+	var portsJSON, volsJSON, envJSON, svcJSON, backupJSON string
 	var enabled, isSystem int
 	var createdAt, updatedAt string
 	err := rows.Scan(
 		&p.ID, &p.DisplayName, (*string)(&p.ConfigMode),
 		&p.RegistryImage, &p.ImageTag, &portsJSON, &volsJSON, &p.ExtraOptions, &p.BindHost,
 		&p.CustomCompose, &p.StackPath, (*string)(&p.HealthType), &p.HealthTarget,
-		&p.PollInterval, &enabled, &envJSON, &svcJSON, &isSystem, &createdAt, &updatedAt,
+		&p.PollInterval, &enabled, &envJSON, &svcJSON, &isSystem, &backupJSON, &createdAt, &updatedAt,
 	)
 	if err != nil {
 		return nil, err
@@ -732,6 +757,7 @@ func scanProjectRows(rows *sql.Rows) (*types.Project, error) {
 	json.Unmarshal([]byte(volsJSON), &p.Volumes)
 	json.Unmarshal([]byte(envJSON), &p.EnvVars)
 	json.Unmarshal([]byte(svcJSON), &p.Services)
+	p.Backup = unmarshalBackupSpec(backupJSON)
 	p.Enabled = enabled == 1
 	p.IsSystem = isSystem == 1
 	p.CreatedAt, _ = time.Parse(time.RFC3339, createdAt)
@@ -782,4 +808,91 @@ func fmtTime(t *time.Time) interface{} {
 
 func fmtTimePtr(t *time.Time) interface{} {
 	return fmtTime(t)
+}
+
+func marshalBackupSpec(b *types.BackupSpec) string {
+	if b == nil {
+		return ""
+	}
+	out, err := json.Marshal(b)
+	if err != nil {
+		return ""
+	}
+	return string(out)
+}
+
+func unmarshalBackupSpec(s string) *types.BackupSpec {
+	if s == "" || s == "{}" {
+		return nil
+	}
+	b := &types.BackupSpec{}
+	if err := json.Unmarshal([]byte(s), b); err != nil {
+		return nil
+	}
+	return b
+}
+
+// --- Backup runs ---
+
+func (db *DB) InsertBackupRun(r *types.BackupRun) (int64, error) {
+	res, err := db.conn.Exec(`
+		INSERT INTO backup_runs (project_id, status, trigger_type, file_path, bytes, sha256, started_at, ended_at, error_message)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		r.ProjectID, r.Status, r.Trigger, r.FilePath, r.Bytes, r.SHA256,
+		r.StartedAt.UTC().Format(time.RFC3339), fmtTime(r.EndedAt), r.Error,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return res.LastInsertId()
+}
+
+func (db *DB) FinishBackupRun(id int64, status types.BackupStatus, filePath, sha256 string, bytes int64, errMsg string) error {
+	now := time.Now().UTC().Format(time.RFC3339)
+	_, err := db.conn.Exec(`
+		UPDATE backup_runs SET status=?, file_path=?, sha256=?, bytes=?, ended_at=?, error_message=?
+		WHERE id=?`,
+		status, filePath, sha256, bytes, now, errMsg, id)
+	return err
+}
+
+func (db *DB) ListBackupRuns(projectID string, limit int) ([]types.BackupRun, error) {
+	if limit <= 0 {
+		limit = 50
+	}
+	rows, err := db.conn.Query(`
+		SELECT id, project_id, status, trigger_type, file_path, bytes, sha256, started_at, ended_at, error_message
+		FROM backup_runs WHERE project_id=? ORDER BY started_at DESC LIMIT ?`,
+		projectID, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var result []types.BackupRun
+	for rows.Next() {
+		var r types.BackupRun
+		var startedAt string
+		var endedAt sql.NullString
+		err := rows.Scan(&r.ID, &r.ProjectID, (*string)(&r.Status), &r.Trigger,
+			&r.FilePath, &r.Bytes, &r.SHA256, &startedAt, &endedAt, &r.Error)
+		if err != nil {
+			return nil, err
+		}
+		r.StartedAt, _ = time.Parse(time.RFC3339, startedAt)
+		r.EndedAt = parseNullTime(endedAt)
+		result = append(result, r)
+	}
+	return result, nil
+}
+
+// ResetStaleBackups marks any in_progress backup runs as failed. Called on
+// startup to recover from a crash mid-backup.
+func (db *DB) ResetStaleBackups() error {
+	now := time.Now().UTC().Format(time.RFC3339)
+	_, err := db.conn.Exec(`
+		UPDATE backup_runs SET status=?, ended_at=?, error_message='interrupted by restart'
+		WHERE status=?`,
+		types.BackupFailed, now, types.BackupInProgress)
+	return err
 }
