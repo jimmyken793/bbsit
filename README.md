@@ -157,10 +157,44 @@ env_vars:
 | `env_vars` | no | Environment variables as key-value pairs (shared across services) |
 | `extra_options` | no | Raw YAML fragment merged into the compose service block |
 | `services` | no | Array of services (replaces top-level `registry_image`/`ports`/etc.) |
+| `backup` | no | App-aware backup/restore spec for one service |
 
 Each entry in `services` supports: `name`, `registry_image`, `image_tag`, `polled`, `platform`, `ports`, `volumes`, `extra_options`.
 
 BBSit generates `compose.yaml` from these fields. Health check, poll interval, and enabled/disabled are configured separately below the editor.
+
+### Backups
+
+Projects can define an app-aware `backup:` block. bbsit runs the configured
+command inside the target service with `compose exec -T`, auto-mounts
+`{StackPath}/backups/` into the service at `output_path`, and records each run
+in the audit log. Long-term storage is intentionally left to external tools
+such as restic, rclone, borg, or your existing cloud sync.
+
+```yaml
+backup:
+  service: app
+  user: app
+  output_path: /var/opt/app/backups
+  output_pattern: "*.tar.gz"
+  backup_command: app-backup --output /var/opt/app/backups
+  restore_command: app-restore "$BBSIT_BACKUP_FILE"
+```
+
+`output_path` must be absolute. If the target service does not already mount
+that path, bbsit injects a relative `backups` volume on the next deploy.
+
+Use the CLI to run and inspect backups:
+
+```bash
+bbsit-ctl backup <id>                         # run backup_command
+bbsit-ctl backups <id>                        # list files in {StackPath}/backups/
+bbsit-ctl restore <id> <file>                 # restore in place
+bbsit-ctl restore <id> <file> --as <new-id>   # restore into a fresh clone
+```
+
+See [docs/backups.md](docs/backups.md) for API details, GitLab/InvenTree
+recipes, restore-smoke-test behavior, and current limits.
 
 ## Cloudflare Tunnels
 
@@ -201,6 +235,11 @@ bbsit-ctl delete <id>                  # Stop and remove a project
 bbsit-ctl export <id>                  # Print project YAML to stdout
 bbsit-ctl pack <id> -o backup.tar.gz   # Project YAML + persistent data dirs
 bbsit-ctl unpack backup.tar.gz         # Restore on the target host
+
+# App-aware backups, when the project has a backup: block
+bbsit-ctl backup <id>                  # Run backup_command
+bbsit-ctl backups <id>                 # List backup files
+bbsit-ctl restore <id> <file>          # Run restore_command
 ```
 
 `pack` includes any volume host paths that live under the project's stack
