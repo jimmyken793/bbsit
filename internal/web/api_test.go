@@ -483,6 +483,48 @@ enabled: true`
 	}
 }
 
+func TestImportProject_PreservesPullPolicy(t *testing.T) {
+	_, ts := testServer(t)
+	cookie := setupAuth(t, ts)
+
+	yamlBody := `id: local-image
+display_name: Local Image
+config_mode: form
+services:
+  - name: app
+    registry_image: local/app
+    image_tag: v1
+    polled: false
+    pull_policy: never
+health_type: none
+enabled: true`
+
+	req, _ := http.NewRequest("POST", ts.URL+"/api/projects/import", bytes.NewBufferString(yamlBody))
+	req.Header.Set("Content-Type", "application/x-yaml")
+	req.AddCookie(cookie)
+	resp, err := ts.Client().Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("want 200, got %d: %s", resp.StatusCode, body)
+	}
+	resp.Body.Close()
+
+	resp = authedRequest(t, ts, cookie, "GET", "/api/projects/local-image", "")
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("want 200, got %d", resp.StatusCode)
+	}
+	result := readJSON(t, resp)
+	project := result["project"].(map[string]any)
+	services := project["services"].([]any)
+	service := services[0].(map[string]any)
+	if got := service["pull_policy"]; got != "never" {
+		t.Fatalf("pull_policy = %v, want never", got)
+	}
+}
+
 func TestImportProject_InvalidYAML(t *testing.T) {
 	_, ts := testServer(t)
 	cookie := setupAuth(t, ts)

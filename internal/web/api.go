@@ -389,11 +389,12 @@ func (s *Server) validateAndDefaultProject(p *types.Project, isNew bool) error {
 		var sc struct {
 			RegistryImage string                `yaml:"registry_image"`
 			ImageTag      string                `yaml:"image_tag"`
-			Ports         []types.PortMapping    `yaml:"ports"`
-			Volumes       []types.VolumeMount    `yaml:"volumes"`
-			ExtraOptions  string                 `yaml:"extra_options"`
-			Services      []types.ServiceConfig  `yaml:"services"`
-			EnvVars       map[string]string      `yaml:"env_vars"`
+			PullPolicy    string                `yaml:"pull_policy"`
+			Ports         []types.PortMapping   `yaml:"ports"`
+			Volumes       []types.VolumeMount   `yaml:"volumes"`
+			ExtraOptions  string                `yaml:"extra_options"`
+			Services      []types.ServiceConfig `yaml:"services"`
+			EnvVars       map[string]string     `yaml:"env_vars"`
 		}
 		if err := yaml.Unmarshal([]byte(p.CustomCompose), &sc); err == nil {
 			if len(sc.Services) > 0 {
@@ -408,6 +409,7 @@ func (s *Server) validateAndDefaultProject(p *types.Project, isNew bool) error {
 					RegistryImage: sc.RegistryImage,
 					ImageTag:      tag,
 					Polled:        true,
+					PullPolicy:    sc.PullPolicy,
 					Ports:         sc.Ports,
 					Volumes:       sc.Volumes,
 					ExtraOptions:  sc.ExtraOptions,
@@ -433,6 +435,9 @@ func (s *Server) validateAndDefaultProject(p *types.Project, isNew bool) error {
 		}
 		if p.Services[i].ImageTag == "" {
 			p.Services[i].ImageTag = "latest"
+		}
+		if p.Services[i].PullPolicy == "" {
+			p.Services[i].PullPolicy = "always"
 		}
 		// Normalise volume host paths so absolute paths under the stack dir become
 		// relative — relative paths are portable across hosts and travel with the

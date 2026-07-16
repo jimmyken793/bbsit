@@ -57,7 +57,7 @@ const (
 // PortMapping represents a single host:container port mapping.
 // HostPort accepts "8080" or "127.0.0.1:8080" (with optional bind address).
 type PortMapping struct {
-	HostPort      string `json:"host_port" yaml:"host_port"`             // e.g. "8080", "127.0.0.1:8080", "localhost:8080"
+	HostPort      string `json:"host_port" yaml:"host_port"` // e.g. "8080", "127.0.0.1:8080", "localhost:8080"
 	ContainerPort int    `json:"container_port" yaml:"container_port"`
 	Protocol      string `json:"protocol,omitempty" yaml:"protocol,omitempty"` // tcp (default) | udp
 }
@@ -209,6 +209,7 @@ type ServiceConfig struct {
 	RegistryImage   string           `json:"registry_image" yaml:"registry_image"`
 	ImageTag        string           `json:"image_tag" yaml:"image_tag"`
 	Polled          bool             `json:"polled" yaml:"polled"`
+	PullPolicy      string           `json:"pull_policy,omitempty" yaml:"pull_policy,omitempty"`
 	Platform        string           `json:"platform,omitempty" yaml:"platform,omitempty"` // e.g. linux/amd64, linux/arm64
 	Ports           []PortMapping    `json:"ports,omitempty" yaml:"ports,omitempty"`
 	Volumes         []VolumeMount    `json:"volumes,omitempty" yaml:"volumes,omitempty"`
@@ -270,12 +271,12 @@ func (p *Project) BackupHostDir() string {
 
 // Tunnel represents a Cloudflare tunnel managed by bbsit.
 type Tunnel struct {
-	ID           string    `json:"id"`             // bbsit-side slug
-	Name         string    `json:"name"`           // display name
-	CFTunnelID   string    `json:"cf_tunnel_id"`   // Cloudflare tunnel UUID (TunnelID in credentials.json)
-	AccountTag   string    `json:"account_tag"`    // Cloudflare account tag
-	TunnelSecret string    `json:"tunnel_secret"`  // base64 secret (sensitive — never returned to API)
-	CFAPIToken   string    `json:"cf_api_token"`   // Cloudflare API token with Zone.DNS:Edit (sensitive — never returned)
+	ID           string    `json:"id"`            // bbsit-side slug
+	Name         string    `json:"name"`          // display name
+	CFTunnelID   string    `json:"cf_tunnel_id"`  // Cloudflare tunnel UUID (TunnelID in credentials.json)
+	AccountTag   string    `json:"account_tag"`   // Cloudflare account tag
+	TunnelSecret string    `json:"tunnel_secret"` // base64 secret (sensitive — never returned to API)
+	CFAPIToken   string    `json:"cf_api_token"`  // Cloudflare API token with Zone.DNS:Edit (sensitive — never returned)
 	Enabled      bool      `json:"enabled"`
 	CreatedAt    time.Time `json:"created_at"`
 	UpdatedAt    time.Time `json:"updated_at"`

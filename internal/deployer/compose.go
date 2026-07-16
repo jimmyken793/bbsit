@@ -13,13 +13,14 @@ import (
 // stackConfig is the YAML format for stack config mode.
 // It mirrors the form fields so both modes generate compose.yaml the same way.
 type stackConfig struct {
-	RegistryImage string              `yaml:"registry_image"`
-	ImageTag      string              `yaml:"image_tag"`
-	Platform      string              `yaml:"platform"`
-	Ports         []types.PortMapping `yaml:"ports"`
-	Volumes       []types.VolumeMount `yaml:"volumes"`
-	EnvVars       map[string]string   `yaml:"env_vars"`
-	ExtraOptions  string              `yaml:"extra_options"`
+	RegistryImage string                `yaml:"registry_image"`
+	ImageTag      string                `yaml:"image_tag"`
+	PullPolicy    string                `yaml:"pull_policy"`
+	Platform      string                `yaml:"platform"`
+	Ports         []types.PortMapping   `yaml:"ports"`
+	Volumes       []types.VolumeMount   `yaml:"volumes"`
+	EnvVars       map[string]string     `yaml:"env_vars"`
+	ExtraOptions  string                `yaml:"extra_options"`
 	Services      []types.ServiceConfig `yaml:"services"`
 }
 
@@ -56,6 +57,7 @@ func WriteComposeFiles(p *types.Project, imageOverrides map[string]string) error
 				Name:          p.ID,
 				RegistryImage: sc.RegistryImage,
 				ImageTag:      sc.ImageTag,
+				PullPolicy:    sc.PullPolicy,
 				Platform:      sc.Platform,
 				Ports:         sc.Ports,
 				Volumes:       sc.Volumes,
@@ -134,7 +136,11 @@ func generateFormCompose(p *types.Project) string {
 		if svc.Platform != "" {
 			b.WriteString(fmt.Sprintf("    platform: %s\n", svc.Platform))
 		}
-		b.WriteString("    pull_policy: always\n")
+		pullPolicy := svc.PullPolicy
+		if pullPolicy == "" {
+			pullPolicy = "always"
+		}
+		b.WriteString(fmt.Sprintf("    pull_policy: %s\n", pullPolicy))
 		b.WriteString("    restart: unless-stopped\n")
 
 		// Ports

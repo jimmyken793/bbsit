@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+### Deployment
+
+- **Configurable pull policy**: Services accept `pull_policy`; it defaults to
+  `always` for compatibility and supports `never` for host-local bootstrap
+  images that must remain deployable without a registry.
+
 ### Packaging
 
 - **.deb installs on Podman-only hosts**: `Depends:` now accepts `podman` as an alternative to Docker, and `podman-compose` / `docker-compose` as alternatives to the Docker compose plugin. Auto-detection in `config.yaml` already prefers `docker` then `podman`; set `runtime:` explicitly to override.

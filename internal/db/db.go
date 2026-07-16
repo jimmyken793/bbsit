@@ -6,8 +6,8 @@ import (
 	"fmt"
 	"time"
 
-	_ "modernc.org/sqlite"
 	"gopkg.in/yaml.v3"
+	_ "modernc.org/sqlite"
 
 	"github.com/kingyoung/bbsit/internal/types"
 )
@@ -184,13 +184,14 @@ func (db *DB) migrateV4CustomToForm() {
 
 	for _, r := range toMigrate {
 		var sc struct {
-			RegistryImage string              `yaml:"registry_image"`
-			ImageTag      string              `yaml:"image_tag"`
-			Ports         []types.PortMapping  `yaml:"ports"`
-			Volumes       []types.VolumeMount  `yaml:"volumes"`
-			ExtraOptions  string               `yaml:"extra_options"`
+			RegistryImage string                `yaml:"registry_image"`
+			ImageTag      string                `yaml:"image_tag"`
+			PullPolicy    string                `yaml:"pull_policy"`
+			Ports         []types.PortMapping   `yaml:"ports"`
+			Volumes       []types.VolumeMount   `yaml:"volumes"`
+			ExtraOptions  string                `yaml:"extra_options"`
 			Services      []types.ServiceConfig `yaml:"services"`
-			EnvVars       map[string]string    `yaml:"env_vars"`
+			EnvVars       map[string]string     `yaml:"env_vars"`
 		}
 		if err := yaml.Unmarshal([]byte(r.compose), &sc); err != nil {
 			continue
@@ -209,6 +210,7 @@ func (db *DB) migrateV4CustomToForm() {
 				RegistryImage: sc.RegistryImage,
 				ImageTag:      tag,
 				Polled:        true,
+				PullPolicy:    sc.PullPolicy,
 				Ports:         sc.Ports,
 				Volumes:       sc.Volumes,
 				ExtraOptions:  sc.ExtraOptions,

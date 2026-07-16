@@ -134,6 +134,7 @@ services:
     registry_image: registry.example.com/my-app
     image_tag: latest
     polled: true
+    pull_policy: always
     platform: linux/amd64
     ports:
       - host_port: 8080
@@ -151,6 +152,7 @@ env_vars:
 |-------|----------|-------------|
 | `registry_image` | yes (single-service) | Container image (e.g. `registry.example.com/my-app`) |
 | `image_tag` | no | Image tag (default: `latest`) |
+| `pull_policy` | no | Compose pull policy: `always` (default), `missing`, `never`, or `build`. Use `never` for host-local bootstrap images |
 | `platform` | no | Docker image platform (e.g. `linux/amd64`, `linux/arm64`). Default: host architecture |
 | `ports` | no | Port mappings. `host_port` accepts `8080` or `"127.0.0.1:8080"` (with bind address). `container_port`, optional `protocol` |
 | `volumes` | no | Bind mounts with `host_path`, `container_path`, optional `readonly` |
@@ -159,7 +161,7 @@ env_vars:
 | `services` | no | Array of services (replaces top-level `registry_image`/`ports`/etc.) |
 | `backup` | no | App-aware backup/restore spec for one service |
 
-Each entry in `services` supports: `name`, `registry_image`, `image_tag`, `polled`, `platform`, `ports`, `volumes`, `extra_options`.
+Each entry in `services` supports: `name`, `registry_image`, `image_tag`, `polled`, `pull_policy`, `platform`, `ports`, `volumes`, `extra_options`.
 
 BBSit generates `compose.yaml` from these fields. Health check, poll interval, and enabled/disabled are configured separately below the editor.
 

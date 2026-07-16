@@ -27,11 +27,25 @@ func TestGenerateFormCompose_Basic(t *testing.T) {
 		"services:",
 		"  svc:",
 		"    image: registry.example.com/svc:latest",
+		"    pull_policy: always",
 		"    restart: unless-stopped",
 	} {
 		if !strings.Contains(got, want) {
 			t.Errorf("missing %q in output:\n%s", want, got)
 		}
+	}
+}
+
+func TestGenerateFormCompose_PullPolicyNever(t *testing.T) {
+	p := baseProject()
+	p.Services[0].PullPolicy = "never"
+	got := generateFormCompose(p)
+
+	if !strings.Contains(got, "    pull_policy: never") {
+		t.Errorf("missing local-image pull policy, got:\n%s", got)
+	}
+	if strings.Count(got, "pull_policy:") != 1 {
+		t.Errorf("expected exactly one pull policy, got:\n%s", got)
 	}
 }
 

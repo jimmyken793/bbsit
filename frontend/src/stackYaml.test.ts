@@ -31,6 +31,30 @@ describe('formToYaml', () => {
     expect(yaml).toContain('platform: linux/arm64')
   })
 
+  it('includes non-default pull policy', () => {
+    const yaml = formToYaml([{
+      name: 'local-app',
+      registry_image: 'local/app',
+      image_tag: 'v1',
+      polled: false,
+      pull_policy: 'never',
+    }], [])
+
+    expect(yaml).toContain('pull_policy: never')
+  })
+
+  it('omits the default pull policy', () => {
+    const yaml = formToYaml([{
+      name: 'app',
+      registry_image: 'reg/app',
+      image_tag: 'latest',
+      polled: true,
+      pull_policy: 'always',
+    }], [])
+
+    expect(yaml).not.toContain('pull_policy')
+  })
+
   it('omits platform when not set', () => {
     const services: ServiceConfig[] = [{
       name: 'app',
@@ -102,6 +126,19 @@ env_vars:
     expect(result.envPairs).toEqual([['KEY', 'val']])
   })
 
+  it('parses pull policy from service YAML', () => {
+    const result = yamlToForm(`
+services:
+  - name: local-app
+    registry_image: local/app
+    image_tag: v1
+    polled: false
+    pull_policy: never
+`)
+
+    expect(result.services[0].pull_policy).toBe('never')
+  })
+
   it('parses single-service shorthand', () => {
     const text = `
 registry_image: reg/app
@@ -149,6 +186,7 @@ describe('round-trip', () => {
         registry_image: 'reg/app',
         image_tag: 'latest',
         polled: true,
+        pull_policy: 'never',
         ports: [{ host_port: 8080, container_port: 80 }],
         volumes: [{ host_path: './data', container_path: '/app/data', readonly: true }],
         extra_options: 'network_mode: host',
@@ -165,6 +203,7 @@ describe('round-trip', () => {
     expect(result.services[0].ports).toEqual([{ host_port: 8080, container_port: 80 }])
     expect(result.services[0].volumes).toEqual([{ host_path: './data', container_path: '/app/data', readonly: true }])
     expect(result.services[0].extra_options).toBe('network_mode: host')
+    expect(result.services[0].pull_policy).toBe('never')
     expect(result.services[1].name).toBe('db')
     expect(result.services[1].polled).toBe(false)
     expect(result.envPairs).toEqual([['DB_URL', 'postgres://localhost']])

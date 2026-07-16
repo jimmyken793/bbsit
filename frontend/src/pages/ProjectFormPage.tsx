@@ -10,6 +10,7 @@ const emptyService: ServiceConfig = {
   registry_image: '',
   image_tag: 'latest',
   polled: true,
+  pull_policy: 'always',
 }
 
 const defaultProject: Partial<Project> = {
@@ -287,7 +288,7 @@ export default function ProjectFormPage() {
                       />
                     </div>
 
-                    <div style={{ display: 'flex', gap: 8 }}>
+                    <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
                       <div className="form-group" style={{ flex: 1 }}>
                         <label>Image tag</label>
                         <input
@@ -307,6 +308,19 @@ export default function ProjectFormPage() {
                           <option value="">Default (host)</option>
                           <option value="linux/amd64">linux/amd64</option>
                           <option value="linux/arm64">linux/arm64</option>
+                        </select>
+                      </div>
+                      <div className="form-group">
+                        <label>Pull policy</label>
+                        <select
+                          className="form-control"
+                          value={svc.pull_policy || 'always'}
+                          onChange={e => updateService(si, { pull_policy: e.target.value })}
+                        >
+                          <option value="always">Always</option>
+                          <option value="missing">If missing</option>
+                          <option value="never">Never (local image)</option>
+                          <option value="build">Build</option>
                         </select>
                       </div>
                       <div className="form-group">

@@ -37,6 +37,24 @@ func TestValidateAndDefaultProject_NormalisesVolumes(t *testing.T) {
 	}
 }
 
+func TestValidateAndDefaultProject_DefaultsPullPolicy(t *testing.T) {
+	s := &Server{stackRoot: "/opt/bbsit/stacks"}
+	p := &types.Project{
+		ID: "app",
+		Services: []types.ServiceConfig{{
+			Name:          "app",
+			RegistryImage: "local/app",
+		}},
+	}
+
+	if err := s.validateAndDefaultProject(p, true); err != nil {
+		t.Fatalf("validate: %v", err)
+	}
+	if got := p.Services[0].PullPolicy; got != "always" {
+		t.Fatalf("pull policy = %q, want always", got)
+	}
+}
+
 func TestValidateAndDefaultProject_InjectsBackupVolume(t *testing.T) {
 	s := &Server{stackRoot: "/mnt/nvme/bbsit/stacks"}
 	p := &types.Project{
@@ -115,7 +133,7 @@ func TestValidateAndDefaultProject_BackupValidationErrors(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			p := &types.Project{
-				ID: "p",
+				ID:       "p",
 				Services: []types.ServiceConfig{{Name: "s", RegistryImage: "i"}},
 				Backup:   tc.spec,
 			}

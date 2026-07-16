@@ -7,6 +7,7 @@ interface StackConfigYaml {
     registry_image: string
     image_tag: string
     polled: boolean
+    pull_policy?: string
     platform?: string
     ports?: Array<{ host_port: string | number; container_port: number; protocol?: string }>
     volumes?: Array<{ host_path: string; container_path: string; readonly?: boolean }>
@@ -15,6 +16,7 @@ interface StackConfigYaml {
   }>
   registry_image?: string
   image_tag?: string
+  pull_policy?: string
   platform?: string
   ports?: Array<{ host_port: string | number; container_port: number; protocol?: string }>
   volumes?: Array<{ host_path: string; container_path: string; readonly?: boolean }>
@@ -36,6 +38,7 @@ export function formToYaml(
         image_tag: svc.image_tag || 'latest',
         polled: svc.polled,
       }
+      if (svc.pull_policy && svc.pull_policy !== 'always') s.pull_policy = svc.pull_policy
       if (svc.platform) s.platform = svc.platform
       if (svc.ports?.length) s.ports = svc.ports
       if (svc.volumes?.length) s.volumes = svc.volumes
@@ -69,6 +72,7 @@ export function yamlToForm(text: string): {
       registry_image: s.registry_image || '',
       image_tag: s.image_tag || 'latest',
       polled: s.polled ?? true,
+      pull_policy: s.pull_policy || 'always',
       platform: s.platform,
       ports: s.ports,
       volumes: s.volumes,
@@ -81,6 +85,7 @@ export function yamlToForm(text: string): {
       registry_image: parsed.registry_image,
       image_tag: parsed.image_tag || 'latest',
       polled: true,
+      pull_policy: parsed.pull_policy || 'always',
       platform: parsed.platform,
       ports: parsed.ports,
       volumes: parsed.volumes,
