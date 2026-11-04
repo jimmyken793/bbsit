@@ -1,4 +1,4 @@
-.PHONY: build build-arm64 install clean test deb deb-arm64 deploy-deb deploy-deb-arm64
+.PHONY: build build-arm64 install clean test snapshot-test deb deb-arm64 deploy-deb deploy-deb-arm64
 
 VERSION ?= 0.4.3
 
@@ -103,6 +103,10 @@ deploy-deb-arm64: dist/bbsit_$(VERSION)_arm64.deb
 test:
 	go test ./internal/... ./cmd/...
 	cd frontend && npm test
+	$(MAKE) snapshot-test
+
+snapshot-test:
+	bash ops/snapshot/tests/snapshot_test.sh
 
 clean:
 	rm -rf bin/ dist/ internal/web/frontend/dist/ frontend/node_modules/

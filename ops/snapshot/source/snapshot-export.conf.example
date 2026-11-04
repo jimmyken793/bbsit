@@ -1,0 +1,20 @@
+# Installed as /etc/bbsit/snapshot-export.conf. This file is sourced by bash;
+# keep it root-owned and mode 0600.
+SNAPSHOT_ROOT=/var/lib/bbsit-backup
+BBSIT_DB_PATH=/opt/bbsit/state.db
+BBSIT_CONFIG_PATH=/opt/bbsit/config.yaml
+BBSIT_STACK_ROOT=/opt/bbsit/stacks
+BBSIT_CTL=/usr/local/bin/bbsit-ctl
+
+# Space-separated bbsit project IDs with a tested backup: block. Start empty,
+# prove each manual `bbsit-ctl backup ID`, then add it here.
+BBSIT_BACKUP_PROJECTS=""
+
+AGE_RECIPIENT_FILE=/etc/bbsit/backup-age-recipient.txt
+SECRET_PATHS_FILE=/etc/bbsit/snapshot-secret-paths
+HOOK_DIR=/etc/bbsit/snapshot.d
+SOURCE_KEEP_READY=2
+SOURCE_KEEP_FAILED=3
+SOURCE_MAX_RUN_BYTES=42949672960
+EXPORT_GROUP=bbsit-backup
+

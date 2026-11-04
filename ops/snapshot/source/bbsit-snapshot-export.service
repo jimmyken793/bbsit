@@ -1,0 +1,21 @@
+[Unit]
+Description=Create application-consistent bbsit snapshot export
+After=bbsit.service local-fs.target
+Wants=bbsit.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/bbsit-snapshot-export
+User=root
+Group=root
+UMask=0077
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=full
+ReadWritePaths=/var/lib/bbsit-backup
+TimeoutStartSec=12h
+

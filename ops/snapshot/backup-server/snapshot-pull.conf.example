@@ -1,0 +1,23 @@
+# Installed as /etc/bbsit/snapshot-pull.conf. This file is sourced by bash;
+# keep it root-owned and mode 0600.
+SNAPSHOT_ROOT=/srv/backups/bbsit-host
+SOURCE=bbsit-backup@bbsit-source.example.com
+# The source account is restricted with rrsync to the ready directory, so / is
+# the correct path from that account's view.
+SOURCE_PATH=/runs
+# Optional append-only/immutable directories exposed as /files/NAME by the
+# source. Never put a live database or mutable application config here.
+FILESETS=""
+# Current-host candidate after the read-only bind export is configured:
+# FILESETS="mail-attachments mail-raw-emails company-pages company-optimizer-workspace inventree-media ankipan-raw-staging ankipan-raw-documents ankipan-schema"
+SSH_KEY=/root/.ssh/bbsit-snapshot
+SSH_KNOWN_HOSTS=/root/.ssh/known_hosts
+
+KEEP_DAILY=14
+KEEP_WEEKLY=8
+KEEP_MONTHLY=6
+KEEP_FAILED=3
+WARN_PERCENT=70
+PRUNE_PERCENT=75
+FAIL_PERCENT=80
+RETENTION_TIMEZONE=Asia/Taipei

@@ -1,0 +1,13 @@
+[Unit]
+Description=Daily pull of bbsit snapshots
+
+[Timer]
+OnCalendar=*-*-* 03:30:00 Asia/Taipei
+Persistent=true
+RandomizedDelaySec=5m
+AccuracySec=1m
+Unit=bbsit-snapshot-pull.service
+
+[Install]
+WantedBy=timers.target
+

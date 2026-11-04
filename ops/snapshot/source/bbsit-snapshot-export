@@ -1,0 +1,217 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+CONFIG_FILE="${BBSIT_SNAPSHOT_CONFIG:-/etc/bbsit/snapshot-export.conf}"
+[[ -r "$CONFIG_FILE" ]] || { echo "snapshot-export: cannot read $CONFIG_FILE" >&2; exit 1; }
+if (( EUID == 0 )); then
+  [[ -f "$CONFIG_FILE" && ! -L "$CONFIG_FILE" && $(stat -c '%u' "$CONFIG_FILE") == 0 ]] \
+    || { echo "snapshot-export: config must be a root-owned regular file" >&2; exit 1; }
+  config_mode=$(stat -c '%a' "$CONFIG_FILE")
+  (( (8#$config_mode & 8#022) == 0 )) \
+    || { echo "snapshot-export: config must not be group/other writable" >&2; exit 1; }
+fi
+# shellcheck source=/dev/null
+source "$CONFIG_FILE"
+
+SNAPSHOT_ROOT="${SNAPSHOT_ROOT:-/var/lib/bbsit-backup}"
+BBSIT_DB_PATH="${BBSIT_DB_PATH:-/opt/bbsit/state.db}"
+BBSIT_CONFIG_PATH="${BBSIT_CONFIG_PATH:-/opt/bbsit/config.yaml}"
+BBSIT_STACK_ROOT="${BBSIT_STACK_ROOT:-/opt/bbsit/stacks}"
+BBSIT_CTL="${BBSIT_CTL:-/usr/local/bin/bbsit-ctl}"
+BBSIT_BACKUP_PROJECTS="${BBSIT_BACKUP_PROJECTS:-}"
+AGE_RECIPIENT_FILE="${AGE_RECIPIENT_FILE:-/etc/bbsit/backup-age-recipient.txt}"
+SECRET_PATHS_FILE="${SECRET_PATHS_FILE:-/etc/bbsit/snapshot-secret-paths}"
+HOOK_DIR="${HOOK_DIR:-/etc/bbsit/snapshot.d}"
+SOURCE_KEEP_READY="${SOURCE_KEEP_READY:-2}"
+SOURCE_KEEP_FAILED="${SOURCE_KEEP_FAILED:-3}"
+SOURCE_MAX_RUN_BYTES="${SOURCE_MAX_RUN_BYTES:-42949672960}"
+EXPORT_GROUP="${EXPORT_GROUP:-bbsit-backup}"
+ALLOW_NONROOT="${ALLOW_NONROOT:-0}"
+
+umask 0077
+
+log() { printf 'snapshot-export: %s\n' "$*" >&2; }
+die() { log "ERROR: $*"; exit 1; }
+require_cmd() { command -v "$1" >/dev/null 2>&1 || die "required command not found: $1"; }
+
+validate_root() {
+  local path=$1
+  [[ "$path" == /* && "$path" != / ]] || die "unsafe absolute path: $path"
+}
+
+validate_uint() {
+  local name=$1 value=$2
+  [[ "$value" =~ ^[0-9]+$ ]] || die "$name must be an unsigned integer"
+}
+
+validate_run_id() {
+  [[ "$1" =~ ^[0-9]{8}T[0-9]{6}Z$ ]] || die "invalid run id: $1"
+}
+
+validate_root_control_file() {
+  local path=$1 mode
+  [[ -f "$path" && ! -L "$path" && $(stat -c '%u' "$path") == 0 ]] \
+    || die "control file must be a root-owned regular file: $path"
+  mode=$(stat -c '%a' "$path")
+  (( (8#$mode & 8#022) == 0 )) || die "control file is group/other writable: $path"
+}
+
+prune_run_dirs() {
+  local parent=$1 keep=$2
+  local -a runs=()
+  local path base i
+  [[ -d "$parent" ]] || return 0
+  while IFS= read -r path; do
+    base=${path##*/}
+    [[ "$base" =~ ^[0-9]{8}T[0-9]{6}Z$ ]] && runs+=("$path")
+  done < <(find "$parent" -mindepth 1 -maxdepth 1 -type d -print | LC_ALL=C sort)
+  for ((i=0; i < ${#runs[@]} - keep; i++)); do
+    path=${runs[$i]}
+    [[ "${path%/*}" == "$parent" ]] || die "refusing to prune outside $parent"
+    log "pruning ${path##*/} from ${parent##*/}"
+    rm -rf -- "$path"
+  done
+}
+
+[[ "$ALLOW_NONROOT" == 1 || $EUID -eq 0 ]] || die "must run as root"
+validate_root "$SNAPSHOT_ROOT"
+validate_root "$BBSIT_DB_PATH"
+validate_root "$BBSIT_CONFIG_PATH"
+validate_root "$BBSIT_STACK_ROOT"
+validate_root "$AGE_RECIPIENT_FILE"
+validate_root "$SECRET_PATHS_FILE"
+validate_root "$HOOK_DIR"
+validate_uint SOURCE_KEEP_READY "$SOURCE_KEEP_READY"
+validate_uint SOURCE_KEEP_FAILED "$SOURCE_KEEP_FAILED"
+validate_uint SOURCE_MAX_RUN_BYTES "$SOURCE_MAX_RUN_BYTES"
+(( SOURCE_KEEP_READY >= 1 )) || die "SOURCE_KEEP_READY must be at least 1"
+
+for cmd in sqlite3 age tar sha256sum find sort flock sync du cp; do require_cmd "$cmd"; done
+[[ -x "$BBSIT_CTL" ]] || die "bbsit-ctl is not executable: $BBSIT_CTL"
+[[ -r "$BBSIT_DB_PATH" ]] || die "bbsit database is not readable: $BBSIT_DB_PATH"
+[[ -r "$BBSIT_CONFIG_PATH" ]] || die "bbsit config is not readable: $BBSIT_CONFIG_PATH"
+[[ -r "$AGE_RECIPIENT_FILE" ]] || die "age recipient file is not readable: $AGE_RECIPIENT_FILE"
+[[ -r "$SECRET_PATHS_FILE" ]] || die "secret path list is not readable: $SECRET_PATHS_FILE"
+if [[ "$ALLOW_NONROOT" != 1 ]]; then
+  validate_root_control_file "$AGE_RECIPIENT_FILE"
+  validate_root_control_file "$SECRET_PATHS_FILE"
+fi
+
+mkdir -p "$SNAPSHOT_ROOT"/{staging,ready,failed}
+exec 9>"$SNAPSHOT_ROOT/.export.lock"
+flock -n 9 || die "another export is already running"
+
+run_id="${SNAPSHOT_RUN_ID:-$(date -u +%Y%m%dT%H%M%SZ)}"
+validate_run_id "$run_id"
+partial="$SNAPSHOT_ROOT/staging/$run_id.partial"
+ready="$SNAPSHOT_ROOT/ready/$run_id"
+failed="$SNAPSHOT_ROOT/failed/$run_id"
+[[ ! -e "$partial" && ! -e "$ready" && ! -e "$failed" ]] || die "run already exists: $run_id"
+mkdir -p "$partial/control-plane/stacks" "$partial/projects"
+
+published=0
+on_exit() {
+  local status=$?
+  if (( status != 0 && published == 0 )) && [[ -d "$partial" ]]; then
+    log "export failed; preserving partial run at $failed"
+    mv -- "$partial" "$failed" 2>/dev/null || true
+  fi
+  exit "$status"
+}
+trap on_exit EXIT
+
+log "creating run $run_id"
+sqlite3 "$BBSIT_DB_PATH" ".timeout 30000" ".backup '$partial/control-plane/state.db'"
+integrity=$(sqlite3 "$partial/control-plane/state.db" 'PRAGMA integrity_check;')
+[[ "$integrity" == ok ]] || die "bbsit database integrity_check failed: $integrity"
+printf '%s\n' "$integrity" > "$partial/control-plane/state.db.integrity"
+cp --preserve=mode,timestamps "$BBSIT_CONFIG_PATH" "$partial/control-plane/config.yaml"
+
+if [[ -d "$BBSIT_STACK_ROOT" ]]; then
+  while IFS= read -r -d '' compose; do
+    project=${compose#"$BBSIT_STACK_ROOT"/}
+    project=${project%%/*}
+    [[ "$project" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || die "unsafe project directory: $project"
+    mkdir -p "$partial/control-plane/stacks/$project"
+    cp --preserve=mode,timestamps "$compose" "$partial/control-plane/stacks/$project/compose.yaml"
+  done < <(find "$BBSIT_STACK_ROOT" -mindepth 2 -maxdepth 2 -type f -name compose.yaml -print0)
+fi
+
+secret_list="$partial/.secret-paths"
+: > "$secret_list"
+secret_count=0
+while IFS= read -r secret_path || [[ -n "$secret_path" ]]; do
+  [[ -z "$secret_path" || "$secret_path" == \#* ]] && continue
+  validate_root "$secret_path"
+  [[ -e "$secret_path" ]] || die "secret recovery path does not exist: $secret_path"
+  printf '%s\n' "${secret_path#/}" >> "$secret_list"
+  ((secret_count += 1))
+done < "$SECRET_PATHS_FILE"
+(( secret_count > 0 )) || die "secret path list is empty"
+tar --create --file=- --directory=/ --verbatim-files-from --files-from="$secret_list" \
+  | age --encrypt --recipients-file "$AGE_RECIPIENT_FILE" \
+      --output "$partial/control-plane/recovery-secrets.tar.age"
+rm -f -- "$secret_list"
+
+for project in $BBSIT_BACKUP_PROJECTS; do
+  [[ "$project" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || die "unsafe project id: $project"
+  log "running application backup for $project"
+  backup_path=$($BBSIT_CTL backup "$project")
+  [[ "$backup_path" == /* && "$backup_path" != *$'\n'* && -f "$backup_path" ]] \
+    || die "bbsit-ctl returned an invalid backup path for $project"
+  expected_prefix="$BBSIT_STACK_ROOT/$project/backups/"
+  [[ "$backup_path" == "$expected_prefix"* ]] \
+    || die "backup path for $project is outside $expected_prefix"
+  mkdir -p "$partial/projects/$project"
+  cp --reflink=auto --preserve=mode,timestamps "$backup_path" "$partial/projects/$project/"
+done
+
+if [[ -d "$HOOK_DIR" ]]; then
+  while IFS= read -r -d '' hook; do
+    [[ -x "$hook" ]] || continue
+    if [[ "$ALLOW_NONROOT" != 1 ]]; then
+      [[ $(stat -c '%u' "$hook") == 0 ]] || die "hook is not root-owned: $hook"
+      hook_mode=$(stat -c '%a' "$hook")
+      (( (8#$hook_mode & 8#022) == 0 )) || die "hook is group/other writable: $hook"
+    fi
+    log "running hook ${hook##*/}"
+    SNAPSHOT_RUN_DIR="$partial" SNAPSHOT_RUN_ID="$run_id" \
+      BBSIT_STACK_ROOT="$BBSIT_STACK_ROOT" "$hook"
+  done < <(find "$HOOK_DIR" -mindepth 1 -maxdepth 1 -type f -name '*.sh' -print0 | LC_ALL=C sort -z)
+fi
+
+run_bytes=$(du -sb "$partial" | awk '{print $1}')
+(( run_bytes <= SOURCE_MAX_RUN_BYTES )) \
+  || die "run is $run_bytes bytes, above SOURCE_MAX_RUN_BYTES=$SOURCE_MAX_RUN_BYTES"
+
+{
+  printf 'run_id=%s\n' "$run_id"
+  printf 'created_utc=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  printf 'source_host=%s\n' "$(hostname -f 2>/dev/null || hostname)"
+  printf 'payload_bytes=%s\n' "$run_bytes"
+} > "$partial/METADATA"
+
+(
+  cd "$partial"
+  find . -type f ! -name SHA256SUMS ! -name .complete -print0 \
+    | LC_ALL=C sort -z \
+    | xargs -0 sha256sum > SHA256SUMS
+)
+find "$partial" -type d -exec chmod 0750 {} +
+find "$partial" -type f -exec chmod 0640 {} +
+if [[ "$ALLOW_NONROOT" != 1 ]]; then
+  chown -R "root:$EXPORT_GROUP" "$partial"
+fi
+find "$partial" -type f -exec sync -f {} +
+printf 'complete\n' > "$partial/.complete"
+chmod 0640 "$partial/.complete"
+if [[ "$ALLOW_NONROOT" != 1 ]]; then chown "root:$EXPORT_GROUP" "$partial/.complete"; fi
+sync -f "$partial/.complete"
+sync -f "$partial"
+mv -- "$partial" "$ready"
+sync -f "$SNAPSHOT_ROOT/ready"
+published=1
+
+prune_run_dirs "$SNAPSHOT_ROOT/ready" "$SOURCE_KEEP_READY"
+prune_run_dirs "$SNAPSHOT_ROOT/failed" "$SOURCE_KEEP_FAILED"
+log "published $ready"

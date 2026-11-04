@@ -1,0 +1,13 @@
+[Unit]
+Description=Daily bbsit snapshot export
+
+[Timer]
+OnCalendar=*-*-* 02:00:00 Asia/Taipei
+Persistent=true
+RandomizedDelaySec=5m
+AccuracySec=1m
+Unit=bbsit-snapshot-export.service
+
+[Install]
+WantedBy=timers.target
+

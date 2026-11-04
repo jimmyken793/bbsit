@@ -1,0 +1,251 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+CONFIG_FILE="${BBSIT_SNAPSHOT_CONFIG:-/etc/bbsit/snapshot-pull.conf}"
+[[ -r "$CONFIG_FILE" ]] || { echo "snapshot-pull: cannot read $CONFIG_FILE" >&2; exit 1; }
+if (( EUID == 0 )); then
+  [[ -f "$CONFIG_FILE" && ! -L "$CONFIG_FILE" && $(stat -c '%u' "$CONFIG_FILE") == 0 ]] \
+    || { echo "snapshot-pull: config must be a root-owned regular file" >&2; exit 1; }
+  config_mode=$(stat -c '%a' "$CONFIG_FILE")
+  (( (8#$config_mode & 8#022) == 0 )) \
+    || { echo "snapshot-pull: config must not be group/other writable" >&2; exit 1; }
+fi
+# shellcheck source=/dev/null
+source "$CONFIG_FILE"
+
+SNAPSHOT_ROOT="${SNAPSHOT_ROOT:-/srv/backups/bbsit-host}"
+SOURCE="${SOURCE:-bbsit-backup@bbsit-host}"
+SOURCE_PATH="${SOURCE_PATH:-/}"
+# Space-separated, curated immutable directory names exposed below
+# /files/ by the same restricted rrsync account.
+FILESETS="${FILESETS:-}"
+SOURCE_LOCAL_DIR="${SOURCE_LOCAL_DIR:-}"
+FILESETS_LOCAL_DIR="${FILESETS_LOCAL_DIR:-}"
+SSH_KEY="${SSH_KEY:-/root/.ssh/bbsit-snapshot}"
+SSH_KNOWN_HOSTS="${SSH_KNOWN_HOSTS:-/root/.ssh/known_hosts}"
+KEEP_DAILY="${KEEP_DAILY:-14}"
+KEEP_WEEKLY="${KEEP_WEEKLY:-8}"
+KEEP_MONTHLY="${KEEP_MONTHLY:-6}"
+KEEP_FAILED="${KEEP_FAILED:-3}"
+WARN_PERCENT="${WARN_PERCENT:-70}"
+PRUNE_PERCENT="${PRUNE_PERCENT:-75}"
+FAIL_PERCENT="${FAIL_PERCENT:-80}"
+RETENTION_TIMEZONE="${RETENTION_TIMEZONE:-Asia/Taipei}"
+DISK_USE_OVERRIDE="${DISK_USE_OVERRIDE:-}"
+ALLOW_NONROOT="${ALLOW_NONROOT:-0}"
+
+umask 0077
+
+log() { printf 'snapshot-pull: %s\n' "$*" >&2; }
+die() { log "ERROR: $*"; exit 1; }
+require_cmd() { command -v "$1" >/dev/null 2>&1 || die "required command not found: $1"; }
+validate_root() { [[ "$1" == /* && "$1" != / ]] || die "unsafe absolute path: $1"; }
+validate_uint() { [[ "$2" =~ ^[0-9]+$ ]] || die "$1 must be an unsigned integer"; }
+
+safe_remove() {
+  local path=$1 parent=$2 pattern=$3 base
+  base=${path##*/}
+  [[ "${path%/*}" == "$parent" && "$base" =~ $pattern ]] \
+    || die "refusing unsafe retention removal: $path"
+  log "retention pruning $path"
+  rm -rf -- "$path"
+}
+
+prune_named_dirs() {
+  local parent=$1 keep=$2 pattern=$3
+  local -a entries=()
+  local path base i
+  [[ -d "$parent" ]] || return 0
+  while IFS= read -r path; do
+    base=${path##*/}
+    [[ "$base" =~ $pattern ]] && entries+=("$path")
+  done < <(find "$parent" -mindepth 1 -maxdepth 1 -type d -print | LC_ALL=C sort)
+  for ((i=0; i < ${#entries[@]} - keep; i++)); do
+    safe_remove "${entries[$i]}" "$parent" "$pattern"
+  done
+}
+
+apply_retention() {
+  prune_named_dirs "$SNAPSHOT_ROOT/daily" "$KEEP_DAILY" '^[0-9]{8}T[0-9]{6}Z$'
+  prune_named_dirs "$SNAPSHOT_ROOT/weekly" "$KEEP_WEEKLY" '^[0-9]{4}-W[0-9]{2}$'
+  prune_named_dirs "$SNAPSHOT_ROOT/monthly" "$KEEP_MONTHLY" '^[0-9]{4}-[0-9]{2}$'
+  prune_named_dirs "$SNAPSHOT_ROOT/failed" "$KEEP_FAILED" '^[0-9]{8}T[0-9]{6}Z\.failure-[0-9]{8}T[0-9]{6}Z-[0-9]+$'
+}
+
+disk_use_percent() {
+  if [[ -n "$DISK_USE_OVERRIDE" ]]; then
+    printf '%s\n' "$DISK_USE_OVERRIDE"
+  else
+    df -P "$SNAPSHOT_ROOT" | awk 'NR==2 {gsub(/%/, "", $5); print $5}'
+  fi
+}
+
+check_capacity() {
+  local used
+  used=$(disk_use_percent)
+  validate_uint disk_usage "$used"
+  if (( used >= PRUNE_PERCENT )); then
+    log "filesystem is ${used}% full; pruning expired recovery points"
+    apply_retention
+    used=$(disk_use_percent)
+  fi
+  (( used < FAIL_PERCENT )) || die "filesystem is ${used}% full (hard limit ${FAIL_PERCENT}%)"
+  if (( used >= WARN_PERCENT )); then
+    log "WARNING: filesystem is ${used}% full (warning ${WARN_PERCENT}%)"
+  fi
+}
+
+list_source_runs() {
+  local path base
+  if [[ -n "$SOURCE_LOCAL_DIR" ]]; then
+    while IFS= read -r path; do
+      base=${path##*/}
+      [[ "$base" =~ ^[0-9]{8}T[0-9]{6}Z$ && -f "$path/.complete" ]] && printf '%s\n' "$base"
+    done < <(find "$SOURCE_LOCAL_DIR" -mindepth 1 -maxdepth 1 -type d -print | LC_ALL=C sort -r)
+  else
+    rsync --list-only --dirs -e "${ssh_cmd[*]}" "$SOURCE:${SOURCE_PATH%/}/" \
+      | awk '{print $NF}' \
+      | sed 's:/$::' \
+      | awk '/^[0-9]{8}T[0-9]{6}Z$/' \
+      | LC_ALL=C sort -r
+  fi
+}
+
+pull_run() {
+  local run_id=$1 destination=$2
+  local -a args=(--archive --hard-links --numeric-ids --partial --partial-dir=.rsync-partial)
+  [[ -L "$SNAPSHOT_ROOT/latest" && -d "$SNAPSHOT_ROOT/latest" ]] \
+    && args+=(--link-dest="$SNAPSHOT_ROOT/latest")
+  if [[ -n "$SOURCE_LOCAL_DIR" ]]; then
+    rsync "${args[@]}" "$SOURCE_LOCAL_DIR/$run_id/" "$destination/"
+  else
+    rsync "${args[@]}" -e "${ssh_cmd[*]}" \
+      "$SOURCE:${SOURCE_PATH%/}/$run_id/" "$destination/"
+  fi
+}
+
+pull_fileset() {
+  local fileset=$1 destination=$2
+  local -a args=(--archive --hard-links --numeric-ids --partial --partial-dir=.rsync-partial)
+  [[ -L "$SNAPSHOT_ROOT/latest" && -d "$SNAPSHOT_ROOT/latest/files/$fileset" ]] \
+    && args+=(--link-dest="$SNAPSHOT_ROOT/latest/files/$fileset")
+  if [[ -n "$FILESETS_LOCAL_DIR" ]]; then
+    rsync "${args[@]}" "$FILESETS_LOCAL_DIR/$fileset/" "$destination/"
+  else
+    rsync "${args[@]}" -e "${ssh_cmd[*]}" \
+      "$SOURCE:/files/$fileset/" "$destination/"
+  fi
+}
+
+promote_run() {
+  local run_id=$1 source_dir="$SNAPSHOT_ROOT/daily/$1"
+  local date_part time_part timestamp week month
+  date_part=${run_id:0:8}
+  time_part=${run_id:9:6}
+  timestamp="${date_part:0:4}-${date_part:4:2}-${date_part:6:2} ${time_part:0:2}:${time_part:2:2}:${time_part:4:2} UTC"
+  week=$(TZ="$RETENTION_TIMEZONE" date -d "$timestamp" +%G-W%V)
+  month=$(TZ="$RETENTION_TIMEZONE" date -d "$timestamp" +%Y-%m)
+  if [[ ! -e "$SNAPSHOT_ROOT/weekly/$week" ]]; then
+    cp -al -- "$source_dir" "$SNAPSHOT_ROOT/weekly/$week"
+  fi
+  if [[ ! -e "$SNAPSHOT_ROOT/monthly/$month" ]]; then
+    cp -al -- "$source_dir" "$SNAPSHOT_ROOT/monthly/$month"
+  fi
+}
+
+[[ "$ALLOW_NONROOT" == 1 || $EUID -eq 0 ]] || die "must run as root"
+validate_root "$SNAPSHOT_ROOT"
+for item in KEEP_DAILY KEEP_WEEKLY KEEP_MONTHLY KEEP_FAILED WARN_PERCENT PRUNE_PERCENT FAIL_PERCENT; do
+  validate_uint "$item" "${!item}"
+done
+(( KEEP_DAILY >= 1 && WARN_PERCENT < PRUNE_PERCENT && PRUNE_PERCENT < FAIL_PERCENT && FAIL_PERCENT <= 100 )) \
+  || die "invalid retention or capacity thresholds"
+for cmd in rsync sha256sum find sort flock df cp date readlink sync; do require_cmd "$cmd"; done
+
+ssh_cmd=(ssh -i "$SSH_KEY" -o BatchMode=yes -o IdentitiesOnly=yes \
+  -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$SSH_KNOWN_HOSTS")
+if [[ -z "$SOURCE_LOCAL_DIR" ]]; then
+  [[ -r "$SSH_KEY" ]] || die "SSH key is not readable: $SSH_KEY"
+  [[ -r "$SSH_KNOWN_HOSTS" ]] || die "known_hosts is not readable: $SSH_KNOWN_HOSTS"
+else
+  validate_root "$SOURCE_LOCAL_DIR"
+  [[ -z "$FILESETS" || -n "$FILESETS_LOCAL_DIR" ]] \
+    || die "FILESETS_LOCAL_DIR is required with test-only SOURCE_LOCAL_DIR"
+  if [[ -n "$FILESETS_LOCAL_DIR" ]]; then validate_root "$FILESETS_LOCAL_DIR"; fi
+fi
+
+mkdir -p "$SNAPSHOT_ROOT"/{daily,weekly,monthly,failed}
+exec 9>"$SNAPSHOT_ROOT/.pull.lock"
+flock -n 9 || die "another pull is already running"
+check_capacity
+
+source_runs=()
+source_listing=$(list_source_runs) || die "failed to list source runs"
+if [[ -n "$source_listing" ]]; then
+  mapfile -t source_runs <<< "$source_listing"
+fi
+run_id=${source_runs[0]:-}
+[[ -z "$run_id" || "$run_id" =~ ^[0-9]{8}T[0-9]{6}Z$ ]] || die "invalid source run id"
+if [[ -n "$run_id" && -e "$SNAPSHOT_ROOT/daily/$run_id" ]]; then
+  run_id=""
+fi
+
+if [[ -z "$run_id" ]]; then
+  log "no new completed source run"
+  apply_retention
+  exit 0
+fi
+
+partial="$SNAPSHOT_ROOT/daily/$run_id.partial"
+failed="$SNAPSHOT_ROOT/failed/$run_id.failure-$(date -u +%Y%m%dT%H%M%SZ)-$$"
+[[ ! -e "$partial" ]] || die "partial run already exists: $run_id"
+mkdir -p "$partial"
+published=0
+on_exit() {
+  local status=$?
+  if (( status != 0 && published == 0 )) && [[ -d "$partial" ]]; then
+    log "pull failed; preserving partial run at $failed"
+    mv -- "$partial" "$failed" 2>/dev/null || true
+  fi
+  exit "$status"
+}
+trap on_exit EXIT
+
+log "pulling completed run $run_id"
+pull_run "$run_id" "$partial"
+[[ -f "$partial/.complete" ]] || die "source run has no .complete marker"
+[[ -f "$partial/SHA256SUMS" ]] || die "source run has no SHA256SUMS"
+(
+  cd "$partial"
+  sha256sum --check --strict SHA256SUMS
+)
+for fileset in $FILESETS; do
+  [[ "$fileset" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || die "unsafe fileset name: $fileset"
+  log "pulling immutable fileset $fileset"
+  mkdir -p "$partial/files/$fileset"
+  pull_fileset "$fileset" "$partial/files/$fileset"
+done
+if [[ -d "$partial/files" ]]; then
+  (
+    cd "$partial"
+    find files -type f ! -path '*/.rsync-partial/*' -print0 \
+      | LC_ALL=C sort -z \
+      | xargs -0 sha256sum > FILESETS_SHA256SUMS
+  )
+fi
+rm -rf -- "$partial/.rsync-partial"
+find "$partial/files" -type d -name .rsync-partial -prune -exec rm -rf -- {} + 2>/dev/null || true
+printf 'verified\n' > "$partial/.verified"
+find "$partial" -type f -exec sync -f {} +
+sync -f "$partial"
+mv -- "$partial" "$SNAPSHOT_ROOT/daily/$run_id"
+tmp_link="$SNAPSHOT_ROOT/.latest.$run_id"
+ln -s "daily/$run_id" "$tmp_link"
+mv -Tf -- "$tmp_link" "$SNAPSHOT_ROOT/latest"
+sync -f "$SNAPSHOT_ROOT"
+published=1
+
+promote_run "$run_id"
+apply_retention
+check_capacity
+log "published $SNAPSHOT_ROOT/daily/$run_id"

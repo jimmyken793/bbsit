@@ -1,0 +1,21 @@
+[Unit]
+Description=Pull and verify bbsit snapshots
+After=network-online.target local-fs.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/bbsit-snapshot-pull
+User=root
+Group=root
+UMask=0077
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=read-only
+ProtectSystem=full
+ReadWritePaths=/srv/backups/bbsit-host
+TimeoutStartSec=12h
+
