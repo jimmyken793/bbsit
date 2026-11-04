@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/kingyoung/bbsit/internal/db"
@@ -297,6 +298,101 @@ func TestGetProject(t *testing.T) {
 	project := result["project"].(map[string]any)
 	if project["id"] != "get-app" {
 		t.Fatalf("expected id=get-app, got %v", project["id"])
+	}
+}
+
+func TestProjectSecretsAreMaskedAndPreservedOnUpdate(t *testing.T) {
+	srv, ts := testServer(t)
+	cookie := setupAuth(t, ts)
+	create := `{"id":"secret-app","config_mode":"form","registry_image":"reg/app","env_vars":{"API_TOKEN":"super-secret"}}`
+	resp := authedRequest(t, ts, cookie, "POST", "/api/projects", create)
+	if resp.StatusCode != http.StatusCreated {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("create: %d %s", resp.StatusCode, body)
+	}
+	created := readJSON(t, resp)
+	if created["env_vars"].(map[string]any)["API_TOKEN"] != redactedSecret {
+		t.Fatalf("create response exposed secret: %v", created)
+	}
+
+	resp = authedRequest(t, ts, cookie, "GET", "/api/projects/secret-app", "")
+	detail := readJSON(t, resp)
+	project := detail["project"].(map[string]any)
+	if project["env_vars"].(map[string]any)["API_TOKEN"] != redactedSecret {
+		t.Fatalf("get response exposed secret: %v", project)
+	}
+
+	update := `{"config_mode":"form","registry_image":"reg/app","display_name":"Updated","env_vars":{"API_TOKEN":"********"}}`
+	resp = authedRequest(t, ts, cookie, "PUT", "/api/projects/secret-app", update)
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("update: %d %s", resp.StatusCode, body)
+	}
+	resp.Body.Close()
+	stored, err := srv.db.GetProject("secret-app")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.EnvVars["API_TOKEN"] != "super-secret" {
+		t.Fatalf("masked update replaced secret: %q", stored.EnvVars["API_TOKEN"])
+	}
+}
+
+func TestEnvironmentValuesCanBeClassifiedPerKey(t *testing.T) {
+	srv, ts := testServer(t)
+	cookie := setupAuth(t, ts)
+	create := `{"id":"mixed-env","config_mode":"form","registry_image":"reg/app","env_vars":{"APP_MODE":"production","API_TOKEN":"super-secret"},"secret_env_keys":["API_TOKEN"]}`
+	resp := authedRequest(t, ts, cookie, "POST", "/api/projects", create)
+	if resp.StatusCode != http.StatusCreated {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("create: %d %s", resp.StatusCode, body)
+	}
+	created := readJSON(t, resp)
+	env := created["env_vars"].(map[string]any)
+	if env["APP_MODE"] != "production" || env["API_TOKEN"] != redactedSecret {
+		t.Fatalf("unexpected redaction: %v", env)
+	}
+
+	// An explicit classification change preserves the old value and makes it
+	// visible only after the update succeeds.
+	update := `{"config_mode":"form","registry_image":"reg/app","env_vars":{"APP_MODE":"production","API_TOKEN":"********"},"secret_env_keys":[]}`
+	resp = authedRequest(t, ts, cookie, "PUT", "/api/projects/mixed-env", update)
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("unmask with preserved value: %d %s", resp.StatusCode, body)
+	}
+	updated := readJSON(t, resp)
+	if updated["env_vars"].(map[string]any)["API_TOKEN"] != "super-secret" {
+		t.Fatalf("non-secret value still masked: %v", updated)
+	}
+	stored, err := srv.db.GetProject("mixed-env")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(stored.SecretEnvKeys) != 0 {
+		t.Fatalf("SecretEnvKeys = %v", stored.SecretEnvKeys)
+	}
+}
+
+func TestPublicExportCannotRequestSecrets(t *testing.T) {
+	_, ts := testServer(t)
+	cookie := setupAuth(t, ts)
+	create := `{"id":"public-export","config_mode":"form","registry_image":"reg/app","env_vars":{"API_TOKEN":"never-public"}}`
+	resp := authedRequest(t, ts, cookie, "POST", "/api/projects", create)
+	if resp.StatusCode != http.StatusCreated {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("create: %d %s", resp.StatusCode, body)
+	}
+	resp.Body.Close()
+
+	resp = authedRequest(t, ts, cookie, "GET", "/api/projects/public-export/export?export_secrets=true", "")
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("want 403, got %d", resp.StatusCode)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	if strings.Contains(string(body), "never-public") {
+		t.Fatal("public export response exposed secret")
 	}
 }
 
@@ -651,7 +747,10 @@ func TestLogin_InvalidJSON(t *testing.T) {
 	_, ts := testServer(t)
 	setupAuth(t, ts)
 
-	resp, _ := ts.Client().Post(ts.URL+"/api/auth/login", "application/json", bytes.NewBufferString("not json"))
+	resp, err := ts.Client().Post(ts.URL+"/api/auth/login", "application/json", bytes.NewBufferString("not json"))
+	if err != nil {
+		t.Fatal(err)
+	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusBadRequest {

@@ -245,7 +245,11 @@ type Project struct {
 	HealthTarget string            `json:"health_target"` // e.g. http://127.0.0.1:18081/healthz
 	PollInterval int               `json:"poll_interval"` // seconds
 	Enabled      bool              `json:"enabled"`
-	EnvVars      map[string]string `json:"env_vars,omitempty"`
+	EnvVars      map[string]string `json:"env_vars,omitempty" yaml:"env_vars,omitempty"`
+	// SecretEnvKeys identifies environment values that must be masked in API/UI
+	// responses and omitted from ordinary exports. All EnvVars remain encrypted
+	// at rest regardless of this classification.
+	SecretEnvKeys []string `json:"secret_env_keys" yaml:"secret_env_keys"`
 
 	// IsSystem marks projects auto-managed by bbsit (e.g. cloudflared tunnels).
 	// System projects are hidden from the dashboard by default.

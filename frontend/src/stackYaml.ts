@@ -22,11 +22,13 @@ interface StackConfigYaml {
   volumes?: Array<{ host_path: string; container_path: string; readonly?: boolean }>
   extra_options?: string
   env_vars?: Record<string, string>
+  secret_env_keys?: string[]
 }
 
 export function formToYaml(
   services: ServiceConfig[],
   envPairs: [string, string][],
+  secretEnvKeys: string[] = [],
 ): string {
   const obj: StackConfigYaml = {}
 
@@ -51,6 +53,9 @@ export function formToYaml(
   const envObj = Object.fromEntries(envPairs.filter(([k]) => k.trim()))
   if (Object.keys(envObj).length > 0) {
     obj.env_vars = envObj
+    const envKeySet = new Set(Object.keys(envObj))
+    const secrets = [...new Set(secretEnvKeys)].filter(key => envKeySet.has(key)).sort()
+    obj.secret_env_keys = secrets
   }
 
   return yaml.dump(obj, { lineWidth: -1, noRefs: true })
@@ -59,10 +64,11 @@ export function formToYaml(
 export function yamlToForm(text: string): {
   services: ServiceConfig[]
   envPairs: [string, string][]
+  secretEnvKeys: string[]
 } {
   const parsed = yaml.load(text) as StackConfigYaml | null
   if (!parsed || typeof parsed !== 'object') {
-    return { services: [], envPairs: [] }
+    return { services: [], envPairs: [], secretEnvKeys: [] }
   }
 
   let services: ServiceConfig[]
@@ -98,6 +104,9 @@ export function yamlToForm(text: string): {
   const envPairs: [string, string][] = parsed.env_vars
     ? Object.entries(parsed.env_vars)
     : []
+  const envKeys = new Set(envPairs.map(([key]) => key))
+  const secretEnvKeys = (parsed.secret_env_keys ?? envPairs.map(([key]) => key))
+    .filter(key => envKeys.has(key))
 
-  return { services, envPairs }
+  return { services, envPairs, secretEnvKeys }
 }

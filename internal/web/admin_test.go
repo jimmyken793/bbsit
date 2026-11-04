@@ -81,6 +81,162 @@ func TestAdminExportProjectYAML(t *testing.T) {
 	}
 }
 
+func TestAdminExportOmitsSecrets(t *testing.T) {
+	srv, ts, _ := adminTestServer(t)
+	p := &types.Project{
+		ID: "secret-export", ConfigMode: types.ConfigModeForm,
+		Services:  []types.ServiceConfig{{Name: "app", RegistryImage: "reg/app", ImageTag: "latest"}},
+		StackPath: filepath.Join(t.TempDir(), "secret-export"), HealthType: types.HealthNone,
+		EnvVars: map[string]string{"API_TOKEN": "must-not-export"},
+	}
+	if err := srv.db.CreateProject(p); err != nil {
+		t.Fatal(err)
+	}
+	resp, err := ts.Client().Get(ts.URL + "/api/projects/secret-export/export")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	data, _ := io.ReadAll(resp.Body)
+	if strings.Contains(string(data), "must-not-export") || !strings.Contains(string(data), "API_TOKEN") || !strings.Contains(string(data), redactedSecret) {
+		t.Fatalf("export contains secret material:\n%s", data)
+	}
+}
+
+func TestAdminExportIncludesNonSecretEnvironmentValues(t *testing.T) {
+	srv, ts, _ := adminTestServer(t)
+	p := &types.Project{
+		ID: "mixed-export", ConfigMode: types.ConfigModeForm,
+		Services:  []types.ServiceConfig{{Name: "app", RegistryImage: "reg/app", ImageTag: "latest"}},
+		StackPath: filepath.Join(t.TempDir(), "mixed-export"), HealthType: types.HealthNone,
+		EnvVars:       map[string]string{"APP_MODE": "production", "API_TOKEN": "hidden-value"},
+		SecretEnvKeys: []string{"API_TOKEN"},
+	}
+	if err := srv.db.CreateProject(p); err != nil {
+		t.Fatal(err)
+	}
+	resp, err := ts.Client().Get(ts.URL + "/api/projects/mixed-export/export")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	data, _ := io.ReadAll(resp.Body)
+	var got types.Project
+	if err := yaml.Unmarshal(data, &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.EnvVars["APP_MODE"] != "production" {
+		t.Fatalf("non-secret env missing: %v", got.EnvVars)
+	}
+	if got.EnvVars["API_TOKEN"] != redactedSecret || strings.Contains(string(data), "hidden-value") {
+		t.Fatalf("secret env not redacted: %v", got.EnvVars)
+	}
+
+	// Re-importing the ordinary export over the same project preserves the
+	// redacted secret while retaining the visible value.
+	resp, err = ts.Client().Post(ts.URL+"/api/projects/import", "application/x-yaml", bytes.NewReader(data))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("re-import: %d %s", resp.StatusCode, body)
+	}
+	stored, err := srv.db.GetProject(p.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.EnvVars["API_TOKEN"] != "hidden-value" || stored.EnvVars["APP_MODE"] != "production" {
+		t.Fatalf("round trip changed env vars: %v", stored.EnvVars)
+	}
+}
+
+func TestAdminExportIncludesSecretsOnlyWhenRequested(t *testing.T) {
+	srv, ts, _ := adminTestServer(t)
+	p := &types.Project{
+		ID: "secret-recovery", ConfigMode: types.ConfigModeForm,
+		Services:  []types.ServiceConfig{{Name: "app", RegistryImage: "reg/app", ImageTag: "latest"}},
+		StackPath: filepath.Join(t.TempDir(), "secret-recovery"), HealthType: types.HealthNone,
+		EnvVars: map[string]string{"API_TOKEN": "recovery-value"},
+	}
+	if err := srv.db.CreateProject(p); err != nil {
+		t.Fatal(err)
+	}
+
+	resp, err := ts.Client().Get(ts.URL + "/api/projects/secret-recovery/export?export_secrets=true")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("export: %d", resp.StatusCode)
+	}
+	data, _ := io.ReadAll(resp.Body)
+	var got types.Project
+	if err := yaml.Unmarshal(data, &got); err != nil {
+		t.Fatalf("yaml parse: %v", err)
+	}
+	if got.EnvVars["API_TOKEN"] != "recovery-value" {
+		t.Fatalf("secret export did not contain requested value")
+	}
+}
+
+func TestAdminPackIncludesSecretsOnlyWhenRequested(t *testing.T) {
+	srv, ts, stackRoot := adminTestServer(t)
+	p := &types.Project{
+		ID: "secret-pack", ConfigMode: types.ConfigModeForm,
+		Services:  []types.ServiceConfig{{Name: "app", RegistryImage: "reg/app", ImageTag: "latest"}},
+		StackPath: filepath.Join(stackRoot, "secret-pack"), HealthType: types.HealthNone,
+		EnvVars: map[string]string{"DB_PASSWORD": "packed-value"},
+	}
+	if err := srv.db.CreateProject(p); err != nil {
+		t.Fatal(err)
+	}
+
+	resp, err := ts.Client().Get(ts.URL + "/api/projects/secret-pack/export?format=tar.gz&export_secrets=true")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	gz, err := gzip.NewReader(resp.Body)
+	if err != nil {
+		t.Fatalf("gzip: %v", err)
+	}
+	defer gz.Close()
+	tr := tar.NewReader(gz)
+	hdr, err := tr.Next()
+	if err != nil {
+		t.Fatalf("tar: %v", err)
+	}
+	if filepath.Clean(hdr.Name) != "project.yaml" {
+		t.Fatalf("first entry = %q, want project.yaml", hdr.Name)
+	}
+	if hdr.Mode != 0600 {
+		t.Fatalf("project.yaml mode = %04o, want 0600", hdr.Mode)
+	}
+	data, _ := io.ReadAll(tr)
+	var got types.Project
+	if err := yaml.Unmarshal(data, &got); err != nil {
+		t.Fatalf("yaml parse: %v", err)
+	}
+	if got.EnvVars["DB_PASSWORD"] != "packed-value" {
+		t.Fatalf("secret pack did not contain requested value")
+	}
+}
+
+func TestAdminExportRejectsInvalidSecretFlag(t *testing.T) {
+	_, ts, _ := adminTestServer(t)
+	resp, err := ts.Client().Get(ts.URL + "/api/projects/example/export?export_secrets=yes")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("want 400, got %d", resp.StatusCode)
+	}
+}
+
 func TestAdminExportImportRoundTripWithTarball(t *testing.T) {
 	srv, ts, stackRoot := adminTestServer(t)
 

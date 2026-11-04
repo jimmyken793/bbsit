@@ -1,7 +1,9 @@
 package db
 
 import (
+	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -16,6 +18,33 @@ func openTestDB(t *testing.T) *DB {
 	}
 	t.Cleanup(func() { db.Close() })
 	return db
+}
+
+func TestSecretMigrationCleanupRetriesOnReopen(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "retry.db")
+	database, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Simulate a crash after ciphertext was committed and before cleanup.
+	if _, err := database.conn.Exec(`UPDATE secret_migration_cleanup SET pending=1 WHERE id=1`); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.Close(); err != nil {
+		t.Fatal(err)
+	}
+	database, err = Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	var pending int
+	if err := database.conn.QueryRow(`SELECT pending FROM secret_migration_cleanup WHERE id=1`).Scan(&pending); err != nil {
+		t.Fatal(err)
+	}
+	if pending != 0 {
+		t.Fatal("secret migration cleanup was not completed on reopen")
+	}
 }
 
 func sampleProject(id string) *types.Project {
@@ -168,6 +197,211 @@ func TestProjectWithPortsAndVolumes(t *testing.T) {
 	}
 	if got.EnvVars["KEY"] != "value" {
 		t.Errorf("EnvVars[KEY] = %q, want value", got.EnvVars["KEY"])
+	}
+}
+
+func TestProjectSecretsEncryptedAtRest(t *testing.T) {
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "test.db")
+	database, err := Open(dbPath)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer database.Close()
+
+	p := sampleProject("secret-app")
+	p.EnvVars = map[string]string{"API_TOKEN": "do-not-store-plaintext"}
+	if err := database.CreateProject(p); err != nil {
+		t.Fatalf("CreateProject: %v", err)
+	}
+
+	var stored string
+	if err := database.conn.QueryRow(`SELECT env_vars FROM projects WHERE id=?`, p.ID).Scan(&stored); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(stored, "do-not-store-plaintext") || !isEncryptedSecret(stored) {
+		t.Fatalf("env_vars was not encrypted at rest: %q", stored)
+	}
+	got, err := database.GetProject(p.ID)
+	if err != nil {
+		t.Fatalf("GetProject: %v", err)
+	}
+	if got.EnvVars["API_TOKEN"] != "do-not-store-plaintext" {
+		t.Fatalf("decrypted API_TOKEN = %q", got.EnvVars["API_TOKEN"])
+	}
+
+	for _, path := range []string{dbPath, dbPath + ".key"} {
+		info, err := os.Stat(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if info.Mode().Perm() != 0600 {
+			t.Errorf("%s mode = %o, want 600", path, info.Mode().Perm())
+		}
+	}
+}
+
+func TestSecretEnvironmentClassificationRoundTrip(t *testing.T) {
+	database := openTestDB(t)
+	p := sampleProject("mixed-env")
+	p.EnvVars = map[string]string{
+		"APP_MODE":  "production",
+		"API_TOKEN": "classified-secret",
+	}
+	p.SecretEnvKeys = []string{"API_TOKEN"}
+	if err := database.CreateProject(p); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := database.GetProject(p.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.SecretEnvKeys) != 1 || got.SecretEnvKeys[0] != "API_TOKEN" {
+		t.Fatalf("SecretEnvKeys = %v", got.SecretEnvKeys)
+	}
+	if got.EnvVars["APP_MODE"] != "production" || got.EnvVars["API_TOKEN"] != "classified-secret" {
+		t.Fatalf("EnvVars = %v", got.EnvVars)
+	}
+}
+
+func TestLegacyEnvironmentClassificationDefaultsToAllSecret(t *testing.T) {
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "test.db")
+	database, err := Open(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := sampleProject("legacy-classification")
+	p.EnvVars = map[string]string{"PUBLIC_NAME": "value", "TOKEN": "secret"}
+	if err := database.CreateProject(p); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.conn.Exec(`UPDATE projects SET secret_env_keys=NULL WHERE id=?`, p.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	database, err = Open(dbPath)
+	if err != nil {
+		t.Fatalf("reopen with classification migration: %v", err)
+	}
+	defer database.Close()
+	got, err := database.GetProject(p.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"PUBLIC_NAME", "TOKEN"}
+	if len(got.SecretEnvKeys) != len(want) || got.SecretEnvKeys[0] != want[0] || got.SecretEnvKeys[1] != want[1] {
+		t.Fatalf("SecretEnvKeys = %v, want %v", got.SecretEnvKeys, want)
+	}
+}
+
+func TestPlaintextSecretsMigratedOnOpen(t *testing.T) {
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "test.db")
+	database, err := Open(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := sampleProject("legacy-secret")
+	if err := database.CreateProject(p); err != nil {
+		t.Fatal(err)
+	}
+	legacy := `{"LEGACY_TOKEN":"plaintext-before-v8"}`
+	if _, err := database.conn.Exec(`UPDATE projects SET env_vars=? WHERE id=?`, legacy, p.ID); err != nil {
+		t.Fatal(err)
+	}
+	database.Close()
+
+	database, err = Open(dbPath)
+	if err != nil {
+		t.Fatalf("reopen with migration: %v", err)
+	}
+	defer database.Close()
+	got, err := database.GetProject(p.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.EnvVars["LEGACY_TOKEN"] != "plaintext-before-v8" {
+		t.Fatalf("legacy secret not preserved: %v", got.EnvVars)
+	}
+	var stored string
+	database.conn.QueryRow(`SELECT env_vars FROM projects WHERE id=?`, p.ID).Scan(&stored)
+	if !isEncryptedSecret(stored) || strings.Contains(stored, "plaintext-before-v8") {
+		t.Fatalf("legacy value remains plaintext: %q", stored)
+	}
+}
+
+func TestOpenFailsWhenEncryptedDatabaseKeyIsMissing(t *testing.T) {
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "test.db")
+	database, err := Open(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := sampleProject("lost-key")
+	p.EnvVars = map[string]string{"TOKEN": "cannot-recover"}
+	if err := database.CreateProject(p); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.conn.Exec(`PRAGMA wal_checkpoint(TRUNCATE)`); err != nil {
+		t.Fatal(err)
+	}
+	database.Close()
+	if err := os.Remove(dbPath + ".key"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Open(dbPath); err == nil || !strings.Contains(err.Error(), "restore the matching key") {
+		t.Fatalf("Open error = %v, want missing-key recovery error", err)
+	}
+}
+
+func TestOpenFailsWithWrongSecretKey(t *testing.T) {
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "test.db")
+	database, err := Open(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := sampleProject("wrong-key")
+	p.EnvVars = map[string]string{"TOKEN": "encrypted"}
+	if err := database.CreateProject(p); err != nil {
+		t.Fatal(err)
+	}
+	database.Close()
+	if err := os.WriteFile(dbPath+".key", []byte("01234567890123456789012345678901"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Open(dbPath); err == nil || !strings.Contains(err.Error(), "validate encrypted environment") {
+		t.Fatalf("Open error = %v, want wrong-key validation error", err)
+	}
+}
+
+func TestTunnelSecretsEncryptedAtRest(t *testing.T) {
+	database := openTestDB(t)
+	tunnel := &types.Tunnel{
+		ID: "office", Name: "Office", CFTunnelID: "uuid", AccountTag: "account",
+		TunnelSecret: "tunnel-secret-value", CFAPIToken: "api-token-value", Enabled: true,
+	}
+	if err := database.CreateTunnel(tunnel); err != nil {
+		t.Fatal(err)
+	}
+	var secret, token string
+	if err := database.conn.QueryRow(`SELECT tunnel_secret, cf_api_token FROM tunnels WHERE id=?`, tunnel.ID).Scan(&secret, &token); err != nil {
+		t.Fatal(err)
+	}
+	if !isEncryptedSecret(secret) || !isEncryptedSecret(token) || strings.Contains(secret, tunnel.TunnelSecret) || strings.Contains(token, tunnel.CFAPIToken) {
+		t.Fatalf("tunnel secrets not encrypted: secret=%q token=%q", secret, token)
+	}
+	got, err := database.GetTunnel(tunnel.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.TunnelSecret != tunnel.TunnelSecret || got.CFAPIToken != tunnel.CFAPIToken {
+		t.Fatalf("tunnel secrets failed round trip")
 	}
 }
 

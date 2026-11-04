@@ -83,8 +83,10 @@ Commands:
   deploy <id>                  Trigger a manual deploy (poll + reconcile)
   rollback <id>                Roll back to the previous digest
   delete <id>                  Stop and remove a project
-  export <id>                  Print the project definition as YAML
-  pack <id> [-o file.tar.gz]   Pack project + persistent data into a tarball
+  export <id> [-o file] [--export-secrets]
+                               Export project YAML; secret export requires -o
+  pack <id> [-o file.tar.gz] [--export-secrets]
+                               Pack project + persistent data; secret export requires -o
   unpack <file|->              Restore a project from YAML/tar.gz file (or stdin if -)
   backup <id>                  Run the project's configured backup_command
   backups <id>                 List backup files in the project's backups/ dir
@@ -306,11 +308,40 @@ func cmdDelete(c *client, args []string) error {
 }
 
 func cmdExport(c *client, args []string) error {
-	if len(args) == 0 {
-		return fmt.Errorf("usage: bbsit-ctl export <project-id>")
+	var id, outPath string
+	exportSecrets := false
+	for i := 0; i < len(args); i++ {
+		switch args[i] {
+		case "-o", "--output":
+			if i+1 >= len(args) {
+				return fmt.Errorf("%s requires a path", args[i])
+			}
+			outPath = args[i+1]
+			i++
+		case "--export-secrets":
+			exportSecrets = true
+		default:
+			if strings.HasPrefix(args[i], "-") {
+				return fmt.Errorf("unknown option: %s", args[i])
+			}
+			if id != "" {
+				return fmt.Errorf("unexpected argument: %s", args[i])
+			}
+			id = args[i]
+		}
 	}
-	id := args[0]
-	resp, err := c.do("GET", "/api/projects/"+url.PathEscape(id)+"/export", nil, "")
+	if id == "" {
+		return fmt.Errorf("usage: bbsit-ctl export <project-id> [-o file] [--export-secrets]")
+	}
+	if exportSecrets && outPath == "" {
+		return fmt.Errorf("--export-secrets requires --output <file>; refusing to write plaintext secrets to stdout")
+	}
+
+	endpoint := "/api/projects/" + url.PathEscape(id) + "/export"
+	if exportSecrets {
+		endpoint += "?export_secrets=true"
+	}
+	resp, err := c.do("GET", endpoint, nil, "")
 	if err != nil {
 		return err
 	}
@@ -318,12 +349,28 @@ func cmdExport(c *client, args []string) error {
 	if resp.StatusCode >= 400 {
 		return apiError(resp)
 	}
-	_, err = io.Copy(os.Stdout, resp.Body)
-	return err
+	if outPath == "" {
+		_, err = io.Copy(os.Stdout, resp.Body)
+		return err
+	}
+	mode := os.FileMode(0644)
+	if exportSecrets {
+		mode = 0600
+	}
+	if err := writeNewFile(outPath, mode, resp.Body, nil); err != nil {
+		return err
+	}
+	if exportSecrets {
+		fmt.Fprintf(os.Stderr, "WARNING: exported plaintext secrets to %s (mode 0600)\n", outPath)
+	} else {
+		fmt.Fprintf(os.Stderr, "wrote: %s\n", outPath)
+	}
+	return nil
 }
 
 func cmdPack(c *client, args []string) error {
 	var id, outPath string
+	exportSecrets := false
 	for i := 0; i < len(args); i++ {
 		a := args[i]
 		switch a {
@@ -333,7 +380,12 @@ func cmdPack(c *client, args []string) error {
 			}
 			outPath = args[i+1]
 			i++
+		case "--export-secrets":
+			exportSecrets = true
 		default:
+			if strings.HasPrefix(a, "-") {
+				return fmt.Errorf("unknown option: %s", a)
+			}
 			if id != "" {
 				return fmt.Errorf("unexpected argument: %s", a)
 			}
@@ -341,11 +393,18 @@ func cmdPack(c *client, args []string) error {
 		}
 	}
 	if id == "" {
-		return fmt.Errorf("usage: bbsit-ctl pack <project-id> [-o file.tar.gz]")
+		return fmt.Errorf("usage: bbsit-ctl pack <project-id> [-o file.tar.gz] [--export-secrets]")
+	}
+	if exportSecrets && outPath == "" {
+		return fmt.Errorf("--export-secrets requires --output <file>; refusing to write plaintext secrets to stdout")
 	}
 
 	fmt.Fprintf(os.Stderr, "packing %s...\n", id)
-	resp, err := c.do("GET", "/api/projects/"+url.PathEscape(id)+"/export?format=tar.gz", nil, "")
+	query := url.Values{"format": []string{"tar.gz"}}
+	if exportSecrets {
+		query.Set("export_secrets", "true")
+	}
+	resp, err := c.do("GET", "/api/projects/"+url.PathEscape(id)+"/export?"+query.Encode(), nil, "")
 	if err != nil {
 		return err
 	}
@@ -354,15 +413,7 @@ func cmdPack(c *client, args []string) error {
 		return apiError(resp)
 	}
 
-	var out io.Writer = os.Stdout
-	if outPath != "" {
-		f, err := os.Create(outPath)
-		if err != nil {
-			return err
-		}
-		defer f.Close()
-		out = f
-	} else if isTerminal(os.Stdout) {
+	if outPath == "" && isTerminal(os.Stdout) {
 		// Don't dump binary to a TTY
 		return fmt.Errorf("refusing to write tarball to terminal — use -o <file>")
 	}
@@ -373,14 +424,53 @@ func cmdPack(c *client, args []string) error {
 		total = 0
 	}
 	meter := newProgressMeter("pack", total)
-	_, err = io.Copy(io.MultiWriter(out, meter), resp.Body)
+	if outPath == "" {
+		_, err = io.Copy(io.MultiWriter(os.Stdout, meter), resp.Body)
+		meter.Finish()
+		return err
+	}
+	err = writeNewFile(outPath, 0600, resp.Body, meter)
 	meter.Finish()
 	if err != nil {
 		return err
 	}
-	if outPath != "" {
+	if exportSecrets {
+		fmt.Fprintf(os.Stderr, "WARNING: packed plaintext secrets to %s (mode 0600)\n", outPath)
+	} else {
 		fmt.Fprintf(os.Stderr, "wrote: %s\n", outPath)
 	}
+	return nil
+}
+
+// writeNewFile writes a response to a new file without following or replacing
+// an existing path. A failed transfer removes only the file created here.
+func writeNewFile(path string, mode os.FileMode, src io.Reader, meter io.Writer) error {
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, mode)
+	if err != nil {
+		return err
+	}
+	complete := false
+	defer func() {
+		f.Close()
+		if !complete {
+			os.Remove(path)
+		}
+	}()
+
+	dst := io.Writer(f)
+	if meter != nil {
+		dst = io.MultiWriter(f, meter)
+	}
+	if _, err := io.Copy(dst, src); err != nil {
+		return err
+	}
+	if err := f.Sync(); err != nil {
+		return err
+	}
+	if err := f.Close(); err != nil {
+		return err
+	}
+	complete = true
 	return nil
 }
 

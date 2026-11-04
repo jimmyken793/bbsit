@@ -28,7 +28,7 @@ func (s *Server) AdminMux() http.Handler {
 	// Read
 	mux.HandleFunc("GET /api/projects", s.apiListProjects)
 	mux.HandleFunc("GET /api/projects/{id}", s.apiGetProject)
-	mux.HandleFunc("GET /api/projects/{id}/export", s.apiExportProject)
+	mux.HandleFunc("GET /api/projects/{id}/export", s.apiAdminExportProject)
 
 	// Mutate (sync versions: block until done so CLI can report exit code)
 	mux.HandleFunc("POST /api/projects/{id}/start", s.apiAdminStart)
@@ -152,10 +152,37 @@ func (s *Server) apiAdminRollback(w http.ResponseWriter, r *http.Request) {
 
 // --- Export ---
 
-// apiExportProject writes the project as YAML (default) or as a tar.gz bundle
+// apiExportProject is the public Web API export. Secret-bearing exports are
+// deliberately unavailable here, even to an authenticated Web UI session.
+func (s *Server) apiExportProject(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Query().Has("export_secrets") {
+		writeJSON(w, http.StatusForbidden, map[string]string{"error": "secret export is only available over the admin socket"})
+		return
+	}
+	s.exportProject(w, r, false)
+}
+
+// apiAdminExportProject is only mounted on the permission-gated admin Unix
+// socket. bbsit-ctl uses export_secrets=true for an explicit recovery export.
+func (s *Server) apiAdminExportProject(w http.ResponseWriter, r *http.Request) {
+	exportSecrets := false
+	if raw := r.URL.Query().Get("export_secrets"); raw != "" {
+		switch raw {
+		case "true":
+			exportSecrets = true
+		case "false":
+		default:
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "export_secrets must be true or false"})
+			return
+		}
+	}
+	s.exportProject(w, r, exportSecrets)
+}
+
+// exportProject writes the project as YAML (default) or as a tar.gz bundle
 // containing project.yaml plus persistent data dirs whose host paths live under
 // the project's stack path.
-func (s *Server) apiExportProject(w http.ResponseWriter, r *http.Request) {
+func (s *Server) exportProject(w http.ResponseWriter, r *http.Request, exportSecrets bool) {
 	id := r.PathValue("id")
 	p, err := s.db.GetProject(id)
 	if err != nil {
@@ -170,7 +197,7 @@ func (s *Server) apiExportProject(w http.ResponseWriter, r *http.Request) {
 
 	switch format {
 	case "yaml":
-		data, err := marshalProjectYAML(p)
+		data, err := marshalProjectYAML(p, exportSecrets)
 		if err != nil {
 			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 			return
@@ -182,9 +209,9 @@ func (s *Server) apiExportProject(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/gzip")
 		w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="%s.tar.gz"`, p.ID))
 		start := time.Now()
-		s.log.Info("export tarball start", "project", id, "stack_path", p.StackPath)
+		s.log.Info("export tarball start", "project", id, "stack_path", p.StackPath, "export_secrets", exportSecrets)
 		counter := &countingWriter{w: w}
-		if err := writeProjectTarball(counter, p); err != nil {
+		if err := writeProjectTarball(counter, p, exportSecrets); err != nil {
 			s.log.Error("export tarball", "project", id, "error", err, "bytes", counter.n)
 			return
 		}
@@ -192,16 +219,25 @@ func (s *Server) apiExportProject(w http.ResponseWriter, r *http.Request) {
 			"project", id, "bytes", counter.n, "elapsed", time.Since(start).Round(time.Millisecond))
 	default:
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "format must be yaml or tar.gz"})
+		return
+	}
+	if exportSecrets {
+		s.log.Warn("plaintext project secrets exported", "project", id, "format", format)
 	}
 }
 
 // marshalProjectYAML emits a project as YAML, stripped of fields that are only
 // meaningful on the source host (timestamps, stack_path).
-func marshalProjectYAML(p *types.Project) ([]byte, error) {
+func marshalProjectYAML(p *types.Project, exportSecrets bool) ([]byte, error) {
 	clone := *p
 	clone.CreatedAt = clone.CreatedAt.Truncate(0) // keep but normalize
 	clone.UpdatedAt = clone.UpdatedAt.Truncate(0)
 	clone.StackPath = "" // let import recompute under target stack_root
+	if !exportSecrets {
+		// Keep key names and non-secret values useful in ordinary exports while
+		// replacing secret values with the stable round-trip placeholder.
+		clone.EnvVars = redactedEnvVars(p.EnvVars, p.SecretEnvKeys)
+	}
 	return yaml.Marshal(&clone)
 }
 
@@ -209,17 +245,21 @@ func marshalProjectYAML(p *types.Project) ([]byte, error) {
 // any volume host paths that live under StackPath. Absolute paths outside
 // StackPath are skipped (they are environment-specific and the operator must
 // migrate them separately).
-func writeProjectTarball(w io.Writer, p *types.Project) error {
+func writeProjectTarball(w io.Writer, p *types.Project, exportSecrets bool) error {
 	gz := gzip.NewWriter(w)
 	defer gz.Close()
 	tw := tar.NewWriter(gz)
 	defer tw.Close()
 
-	yamlBytes, err := marshalProjectYAML(p)
+	yamlBytes, err := marshalProjectYAML(p, exportSecrets)
 	if err != nil {
 		return err
 	}
-	if err := writeTarFile(tw, "project.yaml", 0644, yamlBytes); err != nil {
+	projectMode := int64(0644)
+	if exportSecrets {
+		projectMode = 0600
+	}
+	if err := writeTarFile(tw, "project.yaml", projectMode, yamlBytes); err != nil {
 		return err
 	}
 

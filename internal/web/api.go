@@ -120,6 +120,9 @@ func (s *Server) apiListProjects(w http.ResponseWriter, r *http.Request) {
 	if projects == nil {
 		projects = []types.ProjectWithState{}
 	}
+	for i := range projects {
+		projects[i].EnvVars = redactedEnvVars(projects[i].EnvVars, projects[i].SecretEnvKeys)
+	}
 	writeJSON(w, http.StatusOK, projects)
 }
 
@@ -137,7 +140,7 @@ func (s *Server) apiGetProject(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{
-		"project":     p,
+		"project":     redactedProject(p),
 		"state":       state,
 		"deployments": deployments,
 	})
@@ -153,6 +156,10 @@ func (s *Server) apiCreateProject(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
 	}
+	if err := resolveProjectSecrets(p, nil); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
 
 	if err := s.db.CreateProject(p); err != nil {
 		if strings.Contains(err.Error(), "UNIQUE") {
@@ -163,7 +170,7 @@ func (s *Server) apiCreateProject(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.reconcileTunnels()
-	writeJSON(w, http.StatusCreated, p)
+	writeJSON(w, http.StatusCreated, redactedProject(p))
 }
 
 func (s *Server) apiUpdateProject(w http.ResponseWriter, r *http.Request) {
@@ -174,18 +181,31 @@ func (s *Server) apiUpdateProject(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	p.ID = id // ensure ID matches URL
+	existing, err := s.db.GetProject(id)
+	if err != nil {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "project not found"})
+		return
+	}
 	if err := s.validateAndDefaultProject(p, false); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
 	}
+	if err := resolveProjectSecrets(p, existing); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	declassified := declassifiedSecretEnvKeys(existing, p)
 
 	if err := s.db.UpdateProject(p); err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
 	}
+	if len(declassified) > 0 {
+		s.log.Warn("project environment secrets made visible", "project", p.ID, "keys", declassified)
+	}
 	s.deployer.Emit(deployer.Event{Type: deployer.EventProjectUpdated, ProjectID: p.ID})
 	s.reconcileTunnels()
-	writeJSON(w, http.StatusOK, p)
+	writeJSON(w, http.StatusOK, redactedProject(p))
 }
 
 func (s *Server) apiDeleteProject(w http.ResponseWriter, r *http.Request) {
@@ -312,8 +332,16 @@ func (s *Server) upsertProject(w http.ResponseWriter, p *types.Project) {
 		return
 	}
 
-	// Upsert: try update first, fall back to create
-	if _, dbErr := s.db.GetProject(p.ID); dbErr == nil {
+	// Upsert: try update first, fall back to create. Ordinary exports carry
+	// redacted placeholders for secret values, which preserve an existing
+	// project's encrypted values but require fresh values on a new target.
+	existing, dbErr := s.db.GetProject(p.ID)
+	if err := resolveProjectSecrets(p, existing); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	declassified := declassifiedSecretEnvKeys(existing, p)
+	if dbErr == nil {
 		if err := s.db.UpdateProject(p); err != nil {
 			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 			return
@@ -324,10 +352,13 @@ func (s *Server) upsertProject(w http.ResponseWriter, p *types.Project) {
 			return
 		}
 	}
+	if len(declassified) > 0 {
+		s.log.Warn("project environment secrets made visible", "project", p.ID, "keys", declassified)
+	}
 	s.deployer.Emit(deployer.Event{Type: deployer.EventProjectUpdated, ProjectID: p.ID})
 	s.reconcileTunnels()
 
-	writeJSON(w, http.StatusOK, p)
+	writeJSON(w, http.StatusOK, redactedProject(p))
 }
 
 // reconcileTunnels rebuilds cloudflared ingress for every tunnel after a project change.

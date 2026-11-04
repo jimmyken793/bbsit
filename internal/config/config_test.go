@@ -45,6 +45,9 @@ log_level: "debug"
 	if cfg.DBPath != filepath.Join(tmpDir, "test.db") {
 		t.Errorf("DBPath = %q, want %q", cfg.DBPath, filepath.Join(tmpDir, "test.db"))
 	}
+	if cfg.SecretKeyPath != filepath.Join(tmpDir, "secret.key") {
+		t.Errorf("SecretKeyPath = %q, want local derived path", cfg.SecretKeyPath)
+	}
 	if cfg.LogLevel != "debug" {
 		t.Errorf("LogLevel = %q, want %q", cfg.LogLevel, "debug")
 	}

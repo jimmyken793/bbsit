@@ -56,6 +56,7 @@ export interface Project {
   poll_interval: number
   enabled: boolean
   env_vars?: Record<string, string>
+  secret_env_keys?: string[]
   is_system?: boolean
   created_at: string
   updated_at: string

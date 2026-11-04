@@ -47,7 +47,7 @@ func main() {
 	slog.SetDefault(logger)
 
 	// Open database
-	database, err := db.Open(cfg.DBPath)
+	database, err := db.OpenWithKey(cfg.DBPath, cfg.SecretKeyPath)
 	if err != nil {
 		logger.Error("open database", "error", err)
 		os.Exit(1)

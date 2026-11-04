@@ -220,5 +220,10 @@ func writeEnvFile(path string, vars map[string]string) error {
 			b.WriteString(fmt.Sprintf("%s=%s\n", k, v))
 		}
 	}
-	return os.WriteFile(path, []byte(b.String()), 0600) // 0600: only owner can read secrets
+	if err := os.WriteFile(path, []byte(b.String()), 0600); err != nil {
+		return err
+	}
+	// os.WriteFile preserves the mode of an existing file, so explicitly
+	// tighten legacy .env files that may have been created with a broad umask.
+	return os.Chmod(path, 0600)
 }

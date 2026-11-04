@@ -30,6 +30,7 @@ export default function ProjectFormPage() {
   const [form, setForm] = useState<Partial<Project>>(defaultProject)
   const [services, setServices] = useState<ServiceConfig[]>([])
   const [envPairs, setEnvPairs] = useState<[string, string][]>([])
+  const [envSecretFlags, setEnvSecretFlags] = useState<boolean[]>([])
   const [tunnels, setTunnels] = useState<Tunnel[]>([])
   const [viewMode, setViewMode] = useState<'form' | 'yaml'>('form')
   const [yamlText, setYamlText] = useState('')
@@ -37,6 +38,12 @@ export default function ProjectFormPage() {
   const [loading, setLoading] = useState(isEdit)
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
+
+  function loadEnvState(pairs: [string, string][], secretKeys?: string[]) {
+    const secretSet = new Set(secretKeys ?? pairs.map(([key]) => key))
+    setEnvPairs(pairs)
+    setEnvSecretFlags(pairs.map(([key]) => secretSet.has(key)))
+  }
 
   useEffect(() => {
     api.tunnels.list().then(setTunnels).catch(() => {})
@@ -50,7 +57,7 @@ export default function ProjectFormPage() {
       // Populate services from project
       if (p.services && p.services.length > 0) {
         setServices(p.services)
-        setEnvPairs(Object.entries(p.env_vars || {}))
+        loadEnvState(Object.entries(p.env_vars || {}), p.secret_env_keys)
       } else if (p.config_mode === 'custom' && p.custom_compose) {
         // Auto-convert custom_compose to form state
         try {
@@ -59,10 +66,10 @@ export default function ProjectFormPage() {
             ...s,
             name: s.name || (i === 0 ? p.id : `service-${i + 1}`),
           })))
-          setEnvPairs(result.envPairs)
+          loadEnvState(result.envPairs, result.secretEnvKeys)
         } catch {
           setServices([])
-          setEnvPairs(Object.entries(p.env_vars || {}))
+          loadEnvState(Object.entries(p.env_vars || {}), p.secret_env_keys)
         }
       } else if (p.registry_image) {
         setServices([{
@@ -74,9 +81,9 @@ export default function ProjectFormPage() {
           volumes: p.volumes,
           extra_options: p.extra_options,
         }])
-        setEnvPairs(Object.entries(p.env_vars || {}))
+        loadEnvState(Object.entries(p.env_vars || {}), p.secret_env_keys)
       } else {
-        setEnvPairs(Object.entries(p.env_vars || {}))
+        loadEnvState(Object.entries(p.env_vars || {}), p.secret_env_keys)
       }
       setLoading(false)
     }).catch(() => setLoading(false))
@@ -124,13 +131,17 @@ export default function ProjectFormPage() {
     // If on YAML view, parse YAML into form state before saving
     let finalServices = services
     let finalEnvPairs = envPairs
+    let finalEnvSecretFlags = envSecretFlags
     if (viewMode === 'yaml') {
       try {
         const result = yamlToForm(yamlText)
         finalServices = result.services
         finalEnvPairs = result.envPairs
+        const secretSet = new Set(result.secretEnvKeys)
+        finalEnvSecretFlags = finalEnvPairs.map(([key]) => secretSet.has(key))
         setServices(finalServices)
         setEnvPairs(finalEnvPairs)
+        setEnvSecretFlags(finalEnvSecretFlags)
         setYamlError('')
       } catch (e) {
         setYamlError(e instanceof Error ? e.message : 'Invalid YAML')
@@ -144,6 +155,9 @@ export default function ProjectFormPage() {
       custom_compose: '',
       services: finalServices,
       env_vars: Object.fromEntries(finalEnvPairs.filter(([k]) => k.trim())),
+      secret_env_keys: finalEnvPairs
+        .filter(([key], index) => key.trim() && finalEnvSecretFlags[index])
+        .map(([key]) => key),
     }
 
     setSaving(true)
@@ -212,7 +226,7 @@ export default function ProjectFormPage() {
                     try {
                       const result = yamlToForm(yamlText)
                       setServices(result.services)
-                      setEnvPairs(result.envPairs)
+                      loadEnvState(result.envPairs, result.secretEnvKeys)
                       setYamlError('')
                       setViewMode('form')
                     } catch (e) {
@@ -227,7 +241,11 @@ export default function ProjectFormPage() {
                 type="button"
                 className={`mode-tab ${viewMode === 'yaml' ? 'active' : ''}`}
                 onClick={() => {
-                  setYamlText(formToYaml(services, envPairs))
+                  setYamlText(formToYaml(
+                    services,
+                    envPairs,
+                    envPairs.filter((_, index) => envSecretFlags[index]).map(([key]) => key),
+                  ))
                   setYamlError('')
                   setViewMode('yaml')
                 }}
@@ -458,10 +476,13 @@ export default function ProjectFormPage() {
 
               <div className="form-section">
                 <h3>Environment variables</h3>
-                <div className="form-hint" style={{ marginBottom: 8 }}>Shared across all services via .env file.</div>
+                <div className="form-hint" style={{ marginBottom: 8 }}>Shared across all services via a protected .env file. Secret values are masked; leave the mask unchanged to preserve them. Uncheck Secret and save to make an existing value visible. All values remain encrypted in SQLite.</div>
                 {envPairs.map(([k, v], i) => (
                   <div key={i} className="list-row">
                     <input
+                      type="text"
+                      aria-label="Environment variable key"
+                      autoComplete="off"
                       className="form-control"
                       placeholder="KEY"
                       value={k}
@@ -473,6 +494,9 @@ export default function ProjectFormPage() {
                     />
                     <span>=</span>
                     <input
+                      type={envSecretFlags[i] ? 'password' : 'text'}
+                      aria-label={`Value for ${k || 'environment variable'}`}
+                      autoComplete={envSecretFlags[i] ? 'new-password' : 'off'}
                       className="form-control"
                       placeholder="value"
                       value={v}
@@ -482,10 +506,37 @@ export default function ProjectFormPage() {
                         setEnvPairs(next)
                       }}
                     />
-                    <button type="button" className="btn btn-outline btn-sm" onClick={() => setEnvPairs(envPairs.filter((_, j) => j !== i))}>✕</button>
+                    <label style={{ display: 'flex', alignItems: 'center', gap: 5, whiteSpace: 'nowrap', fontSize: 13 }}>
+                      <input
+                        type="checkbox"
+                        aria-label={`Secret ${k || 'environment variable'}`}
+                        checked={envSecretFlags[i] ?? true}
+                        onChange={e => {
+                          const next = [...envSecretFlags]
+                          next[i] = e.target.checked
+                          setEnvSecretFlags(next)
+                        }}
+                      />
+                      Secret
+                    </label>
+                    <button
+                      type="button"
+                      className="btn btn-outline btn-sm"
+                      onClick={() => {
+                        setEnvPairs(envPairs.filter((_, j) => j !== i))
+                        setEnvSecretFlags(envSecretFlags.filter((_, j) => j !== i))
+                      }}
+                    >✕</button>
                   </div>
                 ))}
-                <button type="button" className="btn btn-outline btn-sm" onClick={() => setEnvPairs([...envPairs, ['', '']])}>
+                <button
+                  type="button"
+                  className="btn btn-outline btn-sm"
+                  onClick={() => {
+                    setEnvPairs([...envPairs, ['', '']])
+                    setEnvSecretFlags([...envSecretFlags, true])
+                  }}
+                >
                   + Add variable
                 </button>
               </div>
@@ -500,7 +551,7 @@ export default function ProjectFormPage() {
                   rows={16}
                   value={yamlText}
                   onChange={e => { setYamlText(e.target.value); setYamlError('') }}
-                  placeholder={'services:\n  - name: app\n    registry_image: registry.example.com/my-app\n    image_tag: latest\n    polled: true\n    ports:\n      - host_port: 8080\n        container_port: 80\n\nenv_vars:\n  KEY: value'}
+                  placeholder={'services:\n  - name: app\n    registry_image: registry.example.com/my-app\n    image_tag: latest\n    polled: true\n    ports:\n      - host_port: 8080\n        container_port: 80\n\nenv_vars:\n  PUBLIC_KEY: value\n  API_TOKEN: secret\nsecret_env_keys:\n  - API_TOKEN'}
                 />
                 <div className="form-hint">Edit as YAML. Switch to Form to see structured fields.</div>
               </div>

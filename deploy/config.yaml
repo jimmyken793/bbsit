@@ -7,6 +7,11 @@ listen: "0.0.0.0:9090"
 # SQLite database path
 db_path: "/opt/bbsit/state.db"
 
+# AES-GCM key used to encrypt project env vars and tunnel credentials in SQLite.
+# Generated automatically with mode 0600. Back it up securely: state.db cannot
+# be restored without the matching key.
+secret_key_path: "/opt/bbsit/secret.key"
+
 # Root directory for compose stacks
 # Each project gets a subdirectory here: {stack_root}/{project_id}/
 stack_root: "/opt/bbsit/stacks"

@@ -179,6 +179,7 @@ func (s *Service) cloneForRestore(src *types.Project, newID string) (*types.Proj
 			clone.EnvVars[k] = v
 		}
 	}
+	clone.SecretEnvKeys = append([]string(nil), src.SecretEnvKeys...)
 	if src.Backup != nil {
 		bClone := *src.Backup
 		clone.Backup = &bClone

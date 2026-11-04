@@ -459,7 +459,13 @@ func writeCredentials(stackPath string, t *types.Tunnel) error {
 		return err
 	}
 	path := filepath.Join(stackPath, "credentials.json")
-	return os.WriteFile(path, b, 0644)
+	if err := os.WriteFile(path, b, 0644); err != nil {
+		return err
+	}
+	// The file must remain readable by cloudflared's non-root container UID.
+	// Host secrecy comes from stackPath mode 0700; explicitly restore 0644 in
+	// case a pre-existing file had even broader permissions.
+	return os.Chmod(path, 0644)
 }
 
 // writeConfigYml writes the cloudflared config.yml file.

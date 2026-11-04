@@ -236,6 +236,8 @@ bbsit-ctl delete <id>                  # Stop and remove a project
 # Move a project to another bbsit host
 bbsit-ctl export <id>                  # Print project YAML to stdout
 bbsit-ctl pack <id> -o backup.tar.gz   # Project YAML + persistent data dirs
+bbsit-ctl export <id> --export-secrets -o recovery.yaml
+bbsit-ctl pack <id> --export-secrets -o recovery.tar.gz
 bbsit-ctl unpack backup.tar.gz         # Restore on the target host
 
 # App-aware backups, when the project has a backup: block
@@ -247,7 +249,14 @@ bbsit-ctl restore <id> <file>          # Run restore_command
 `pack` includes any volume host paths that live under the project's stack
 directory. Volumes pointing at absolute paths outside the stack must be
 migrated separately. `unpack` accepts both YAML (config only) and tar.gz
-(config + data) — the format is auto-detected.
+(config + data) — the format is auto-detected. Each environment variable can
+be marked Secret in the project editor or in `secret_env_keys`. Ordinary
+export/pack includes non-secret values and replaces Secret values with
+`********`. `--export-secrets` includes their real values for recovery,
+requires `--output`, refuses to replace an existing file, and creates the file
+with mode `0600`. The option is only accepted by the local admin socket; the
+Web API cannot export secrets. Treat pack files as sensitive even without this
+option because persistent application data may contain credentials.
 
 The socket path and group are configurable in `config.yaml`:
 
@@ -257,6 +266,16 @@ admin_group: "bbsit"    # empty = root only; "docker" also works on docker hosts
 ```
 
 Override at runtime with `BBSIT_SOCKET=/path/to/sock bbsit-ctl ...`.
+
+Project environment variables and Cloudflare credentials are encrypted in
+SQLite. This applies even to ENV values not classified as Secret. The UI/API
+keep all keys visible, mask values listed in `secret_env_keys`, and show
+non-secret values normally. Back up the configured `secret_key_path` securely
+with `state.db`; neither is useful for a full restore without the other. See
+[docs/secrets.md](docs/secrets.md).
+
+For the off-host daily snapshot exporter, rsync puller, retention policy, and
+deployment procedure, see [ops/snapshot/README.md](ops/snapshot/README.md).
 
 ## Server Config
 
@@ -275,6 +294,9 @@ listen: "0.0.0.0:9090"
 # SQLite database path
 db_path: "/opt/bbsit/state.db"
 
+# AES-GCM key for encrypted project/tunnel secrets (generated mode 0600)
+secret_key_path: "/opt/bbsit/secret.key"
+
 # Root directory for compose stacks
 # Each project gets a subdirectory: {stack_root}/{project_id}/
 stack_root: "/opt/stacks"
@@ -287,6 +309,7 @@ log_level: "info"
 |-------|----------|---------|-------------|
 | `listen` | yes | `0.0.0.0:9090` | Address and port for the web UI |
 | `db_path` | yes | `/opt/bbsit/state.db` | Path to SQLite database (parent directory must exist) |
+| `secret_key_path` | no | next to `db_path` | AES-GCM master key; back up securely with the database |
 | `stack_root` | yes | `/opt/stacks` | Root directory for compose stacks (must exist) |
 | `log_level` | no | `info` | Log verbosity: `debug`, `info`, `warn`, `error` |
 
@@ -299,6 +322,7 @@ All paths are validated at startup — bbsit will exit with a clear error if dir
   bbsit               Binary
   config.yaml         BBSit config
   state.db            SQLite
+  secret.key          Secret encryption key (0600)
 
 /opt/stacks/
   <project>/

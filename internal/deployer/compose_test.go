@@ -476,3 +476,20 @@ func TestWriteEnvFile_Escaping(t *testing.T) {
 		t.Error("spaced value should be quoted")
 	}
 }
+
+func TestWriteEnvFile_TightensExistingPermissions(t *testing.T) {
+	path := filepath.Join(t.TempDir(), ".env")
+	if err := os.WriteFile(path, []byte("OLD=value\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeEnvFile(path, map[string]string{"TOKEN": "secret"}); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm() != 0600 {
+		t.Fatalf(".env mode = %o, want 600", info.Mode().Perm())
+	}
+}

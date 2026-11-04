@@ -1,4 +1,5 @@
 listen: "127.0.0.1:9090"
 db_path: "./state.db"
+secret_key_path: "./secret.key"
 stack_root: "./stacks"
 log_level: "debug"

@@ -4,6 +4,8 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"os"
+	"sort"
 	"time"
 
 	"gopkg.in/yaml.v3"
@@ -13,18 +15,66 @@ import (
 )
 
 type DB struct {
-	conn *sql.DB
+	conn    *sql.DB
+	secrets *secretCipher
 }
 
 func Open(path string) (*DB, error) {
+	return OpenWithKey(path, path+".key")
+}
+
+// OpenWithKey opens the database and encrypts sensitive fields with the
+// master key at keyPath. The key is generated with mode 0600 on first use.
+func OpenWithKey(path, keyPath string) (*DB, error) {
+	if _, err := os.Stat(keyPath); os.IsNotExist(err) {
+		for _, dbFile := range []string{path, path + "-wal"} {
+			hasEncryptedSecrets, readErr := fileContainsEncryptedSecrets(dbFile)
+			if readErr != nil {
+				return nil, fmt.Errorf("check database for encrypted secrets: %w", readErr)
+			}
+			if hasEncryptedSecrets {
+				return nil, fmt.Errorf("secret key %q is missing but %q contains encrypted values; restore the matching key", keyPath, dbFile)
+			}
+		}
+	} else if err != nil {
+		return nil, fmt.Errorf("stat secret key: %w", err)
+	}
+	secrets, err := loadSecretCipher(keyPath)
+	if err != nil {
+		return nil, err
+	}
+	if info, err := os.Lstat(path); err == nil {
+		if info.Mode()&os.ModeSymlink != 0 {
+			return nil, fmt.Errorf("database path %q must not be a symlink", path)
+		}
+		if err := os.Chmod(path, 0600); err != nil {
+			return nil, fmt.Errorf("chmod database: %w", err)
+		}
+	} else if os.IsNotExist(err) {
+		f, createErr := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_RDWR, 0600)
+		if createErr != nil {
+			return nil, fmt.Errorf("create database: %w", createErr)
+		}
+		if closeErr := f.Close(); closeErr != nil {
+			return nil, fmt.Errorf("close new database: %w", closeErr)
+		}
+	} else {
+		return nil, fmt.Errorf("stat database: %w", err)
+	}
 	conn, err := sql.Open("sqlite", path+"?_pragma=journal_mode(WAL)&_pragma=busy_timeout(5000)&_pragma=foreign_keys(on)")
 	if err != nil {
 		return nil, fmt.Errorf("open db: %w", err)
 	}
-	db := &DB{conn: conn}
+	db := &DB{conn: conn, secrets: secrets}
 	if err := db.migrate(); err != nil {
 		conn.Close()
 		return nil, fmt.Errorf("migrate: %w", err)
+	}
+	for _, privatePath := range []string{path, path + "-wal", path + "-shm"} {
+		if err := os.Chmod(privatePath, 0600); err != nil && !os.IsNotExist(err) {
+			conn.Close()
+			return nil, fmt.Errorf("chmod database file %q: %w", privatePath, err)
+		}
 	}
 	return db, nil
 }
@@ -62,7 +112,223 @@ func (db *DB) migrate() error {
 	if _, err := db.conn.Exec(schemaV7BackupRuns); err != nil {
 		return err
 	}
+	// v8: encrypt project environment variables and Cloudflare credentials.
+	// Start pending even on databases migrated by earlier versions, which may
+	// have stopped after committing ciphertext but before scrubbing free pages.
+	if _, err := db.conn.Exec(`CREATE TABLE IF NOT EXISTS secret_migration_cleanup (id INTEGER PRIMARY KEY CHECK (id = 1), pending INTEGER NOT NULL); INSERT OR IGNORE INTO secret_migration_cleanup VALUES (1, 1)`); err != nil {
+		return err
+	}
+	_, err := db.migrateV8Secrets()
+	if err != nil {
+		return err
+	}
+	var pending int
+	if err := db.conn.QueryRow(`SELECT pending FROM secret_migration_cleanup WHERE id=1`).Scan(&pending); err != nil {
+		return err
+	}
+	if pending != 0 {
+		// Remove plaintext remnants from SQLite free pages and the WAL after the
+		// one-time migration. This cannot erase historic copies outside this DB.
+		if err := db.checkpointSecrets(); err != nil {
+			return fmt.Errorf("checkpoint encrypted secret migration: %w", err)
+		}
+		if _, err := db.conn.Exec(`VACUUM`); err != nil {
+			return fmt.Errorf("vacuum encrypted secret migration: %w", err)
+		}
+		if err := db.checkpointSecrets(); err != nil {
+			return fmt.Errorf("final checkpoint encrypted secret migration: %w", err)
+		}
+		if _, err := db.conn.Exec(`UPDATE secret_migration_cleanup SET pending=0 WHERE id=1`); err != nil {
+			return err
+		}
+	}
+	// v9: classify every legacy environment variable as secret. NULL means the
+	// project predates per-key classification; [] is an explicit no-secret set.
+	db.conn.Exec(`ALTER TABLE projects ADD COLUMN secret_env_keys TEXT`)
+	if err := db.migrateV9SecretEnvKeys(); err != nil {
+		return err
+	}
 	return nil
+}
+
+func (db *DB) checkpointSecrets() error {
+	var busy, logFrames, checkpointed int
+	if err := db.conn.QueryRow(`PRAGMA wal_checkpoint(TRUNCATE)`).Scan(&busy, &logFrames, &checkpointed); err != nil {
+		return err
+	}
+	if busy != 0 {
+		return fmt.Errorf("database busy during checkpoint (%d of %d frames checkpointed)", checkpointed, logFrames)
+	}
+	return nil
+}
+
+func (db *DB) migrateV9SecretEnvKeys() error {
+	rows, err := db.conn.Query(`SELECT id, env_vars FROM projects WHERE secret_env_keys IS NULL`)
+	if err != nil {
+		return err
+	}
+	type legacyProject struct {
+		id   string
+		envs map[string]string
+	}
+	var projects []legacyProject
+	for rows.Next() {
+		var id, stored string
+		if err := rows.Scan(&id, &stored); err != nil {
+			rows.Close()
+			return err
+		}
+		envs, err := db.decodeProjectEnv(id, stored)
+		if err != nil {
+			rows.Close()
+			return fmt.Errorf("decode legacy project %s environment classification: %w", id, err)
+		}
+		projects = append(projects, legacyProject{id: id, envs: envs})
+	}
+	if err := rows.Close(); err != nil {
+		return err
+	}
+	if len(projects) == 0 {
+		return nil
+	}
+	tx, err := db.conn.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	for _, project := range projects {
+		keys := make([]string, 0, len(project.envs))
+		for key := range project.envs {
+			keys = append(keys, key)
+		}
+		sort.Strings(keys)
+		data, err := json.Marshal(keys)
+		if err != nil {
+			return err
+		}
+		if _, err := tx.Exec(`UPDATE projects SET secret_env_keys=? WHERE id=?`, string(data), project.id); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
+func (db *DB) migrateV8Secrets() (bool, error) {
+	type projectSecret struct{ id, env string }
+	var projects []projectSecret
+	rows, err := db.conn.Query(`SELECT id, env_vars FROM projects`)
+	if err != nil {
+		return false, err
+	}
+	for rows.Next() {
+		var item projectSecret
+		if err := rows.Scan(&item.id, &item.env); err != nil {
+			rows.Close()
+			return false, err
+		}
+		if !isEncryptedSecret(item.env) {
+			if item.env == "" || item.env == "null" {
+				item.env = "{}"
+			}
+			projects = append(projects, item)
+		} else {
+			plain, err := db.secrets.decrypt(projectEnvAAD(item.id), item.env)
+			if err != nil || !json.Valid([]byte(plain)) {
+				rows.Close()
+				if err == nil {
+					err = fmt.Errorf("decrypted value is not valid JSON")
+				}
+				return false, fmt.Errorf("validate encrypted environment for project %s: %w", item.id, err)
+			}
+		}
+	}
+	if err := rows.Close(); err != nil {
+		return false, err
+	}
+
+	type tunnelSecrets struct{ id, secret, token string }
+	var tunnels []tunnelSecrets
+	rows, err = db.conn.Query(`SELECT id, tunnel_secret, cf_api_token FROM tunnels`)
+	if err != nil {
+		return false, err
+	}
+	for rows.Next() {
+		var item tunnelSecrets
+		if err := rows.Scan(&item.id, &item.secret, &item.token); err != nil {
+			rows.Close()
+			return false, err
+		}
+		needsMigration := false
+		if item.secret != "" {
+			if isEncryptedSecret(item.secret) {
+				if _, err := db.secrets.decrypt(tunnelSecretAAD(item.id, "tunnel_secret"), item.secret); err != nil {
+					rows.Close()
+					return false, fmt.Errorf("validate encrypted tunnel secret for %s: %w", item.id, err)
+				}
+			} else {
+				needsMigration = true
+			}
+		}
+		if item.token != "" {
+			if isEncryptedSecret(item.token) {
+				if _, err := db.secrets.decrypt(tunnelSecretAAD(item.id, "cf_api_token"), item.token); err != nil {
+					rows.Close()
+					return false, fmt.Errorf("validate encrypted tunnel API token for %s: %w", item.id, err)
+				}
+			} else {
+				needsMigration = true
+			}
+		}
+		if needsMigration {
+			tunnels = append(tunnels, item)
+		}
+	}
+	if err := rows.Close(); err != nil {
+		return false, err
+	}
+
+	if len(projects) == 0 && len(tunnels) == 0 {
+		return false, nil
+	}
+	tx, err := db.conn.Begin()
+	if err != nil {
+		return false, err
+	}
+	defer tx.Rollback()
+	if _, err := tx.Exec(`UPDATE secret_migration_cleanup SET pending=1 WHERE id=1`); err != nil {
+		return false, err
+	}
+	for _, item := range projects {
+		value, err := db.secrets.encrypt(projectEnvAAD(item.id), item.env)
+		if err != nil {
+			return false, err
+		}
+		if _, err := tx.Exec(`UPDATE projects SET env_vars=? WHERE id=?`, value, item.id); err != nil {
+			return false, err
+		}
+	}
+	for _, item := range tunnels {
+		secret, token := item.secret, item.token
+		if secret != "" && !isEncryptedSecret(secret) {
+			secret, err = db.secrets.encrypt(tunnelSecretAAD(item.id, "tunnel_secret"), secret)
+			if err != nil {
+				return false, err
+			}
+		}
+		if token != "" && !isEncryptedSecret(token) {
+			token, err = db.secrets.encrypt(tunnelSecretAAD(item.id, "cf_api_token"), token)
+			if err != nil {
+				return false, err
+			}
+		}
+		if _, err := tx.Exec(`UPDATE tunnels SET tunnel_secret=?, cf_api_token=? WHERE id=?`, secret, token, item.id); err != nil {
+			return false, err
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 // migrateV3Data converts legacy single-service projects to the new services array format.
@@ -269,6 +535,7 @@ CREATE TABLE IF NOT EXISTS projects (
     poll_interval   INTEGER NOT NULL DEFAULT 300,
     enabled         INTEGER NOT NULL DEFAULT 1,
     env_vars        TEXT DEFAULT '{}',
+	secret_env_keys TEXT,
 
     created_at      TEXT NOT NULL,
     updated_at      TEXT NOT NULL
@@ -342,6 +609,14 @@ func (db *DB) CreateProject(p *types.Project) error {
 	portsJSON, _ := json.Marshal(p.Ports)
 	volsJSON, _ := json.Marshal(p.Volumes)
 	envJSON, _ := json.Marshal(p.EnvVars)
+	if p.EnvVars == nil {
+		envJSON = []byte("{}")
+	}
+	encryptedEnv, err := db.secrets.encrypt(projectEnvAAD(p.ID), string(envJSON))
+	if err != nil {
+		return fmt.Errorf("encrypt project environment: %w", err)
+	}
+	secretEnvJSON := marshalSecretEnvKeys(p.EnvVars, p.SecretEnvKeys)
 	svcJSON, _ := json.Marshal(p.Services)
 	if p.Services == nil {
 		svcJSON = []byte("[]")
@@ -359,12 +634,12 @@ func (db *DB) CreateProject(p *types.Project) error {
 		INSERT INTO projects (id, display_name, config_mode,
 			registry_image, image_tag, ports, volumes, extra_options, bind_host,
 			custom_compose, stack_path, health_type, health_target,
-			poll_interval, enabled, env_vars, services, is_system, backup, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			poll_interval, enabled, env_vars, secret_env_keys, services, is_system, backup, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		p.ID, p.DisplayName, p.ConfigMode,
 		p.RegistryImage, p.ImageTag, string(portsJSON), string(volsJSON), p.ExtraOptions, p.BindHost,
 		p.CustomCompose, p.StackPath, p.HealthType, p.HealthTarget,
-		p.PollInterval, p.Enabled, string(envJSON), string(svcJSON), boolToInt(p.IsSystem), backupJSON, now, now,
+		p.PollInterval, p.Enabled, encryptedEnv, secretEnvJSON, string(svcJSON), boolToInt(p.IsSystem), backupJSON, now, now,
 	)
 	if err != nil {
 		return fmt.Errorf("insert project: %w", err)
@@ -382,6 +657,14 @@ func (db *DB) UpdateProject(p *types.Project) error {
 	portsJSON, _ := json.Marshal(p.Ports)
 	volsJSON, _ := json.Marshal(p.Volumes)
 	envJSON, _ := json.Marshal(p.EnvVars)
+	if p.EnvVars == nil {
+		envJSON = []byte("{}")
+	}
+	encryptedEnv, err := db.secrets.encrypt(projectEnvAAD(p.ID), string(envJSON))
+	if err != nil {
+		return fmt.Errorf("encrypt project environment: %w", err)
+	}
+	secretEnvJSON := marshalSecretEnvKeys(p.EnvVars, p.SecretEnvKeys)
 	svcJSON, _ := json.Marshal(p.Services)
 	if p.Services == nil {
 		svcJSON = []byte("[]")
@@ -389,17 +672,17 @@ func (db *DB) UpdateProject(p *types.Project) error {
 	backupJSON := marshalBackupSpec(p.Backup)
 	now := time.Now().UTC().Format(time.RFC3339)
 
-	_, err := db.conn.Exec(`
+	_, err = db.conn.Exec(`
 		UPDATE projects SET
 			display_name=?, config_mode=?,
 			registry_image=?, image_tag=?, ports=?, volumes=?, extra_options=?, bind_host=?,
 			custom_compose=?, stack_path=?, health_type=?, health_target=?,
-			poll_interval=?, enabled=?, env_vars=?, services=?, is_system=?, backup=?, updated_at=?
+			poll_interval=?, enabled=?, env_vars=?, secret_env_keys=?, services=?, is_system=?, backup=?, updated_at=?
 		WHERE id=?`,
 		p.DisplayName, p.ConfigMode,
 		p.RegistryImage, p.ImageTag, string(portsJSON), string(volsJSON), p.ExtraOptions, p.BindHost,
 		p.CustomCompose, p.StackPath, p.HealthType, p.HealthTarget,
-		p.PollInterval, p.Enabled, string(envJSON), string(svcJSON), boolToInt(p.IsSystem), backupJSON, now,
+		p.PollInterval, p.Enabled, encryptedEnv, secretEnvJSON, string(svcJSON), boolToInt(p.IsSystem), backupJSON, now,
 		p.ID,
 	)
 	return err
@@ -413,11 +696,11 @@ func (db *DB) DeleteProject(id string) error {
 const projectColumns = `id, display_name, config_mode,
 	registry_image, image_tag, ports, volumes, extra_options, bind_host,
 	custom_compose, stack_path, health_type, health_target,
-	poll_interval, enabled, env_vars, services, is_system, backup, created_at, updated_at`
+	poll_interval, enabled, env_vars, secret_env_keys, services, is_system, backup, created_at, updated_at`
 
 func (db *DB) GetProject(id string) (*types.Project, error) {
 	row := db.conn.QueryRow(`SELECT `+projectColumns+` FROM projects WHERE id=?`, id)
-	return scanProject(row)
+	return db.scanProject(row.Scan)
 }
 
 func (db *DB) ListProjects() ([]types.Project, error) {
@@ -429,7 +712,7 @@ func (db *DB) ListProjects() ([]types.Project, error) {
 
 	var projects []types.Project
 	for rows.Next() {
-		p, err := scanProjectRows(rows)
+		p, err := db.scanProject(rows.Scan)
 		if err != nil {
 			return nil, err
 		}
@@ -454,7 +737,7 @@ func (db *DB) ListProjectsWithState() ([]types.ProjectWithState, error) {
 	var result []types.ProjectWithState
 	for rows.Next() {
 		var ps types.ProjectWithState
-		var portsJSON, volsJSON, envJSON, svcJSON, backupJSON string
+		var portsJSON, volsJSON, envJSON, secretEnvJSON, svcJSON, backupJSON string
 		var enabled, isSystem int
 		var createdAt, updatedAt string
 		var lastCheck, lastDeploy, lastSuccess sql.NullString
@@ -465,7 +748,7 @@ func (db *DB) ListProjectsWithState() ([]types.ProjectWithState, error) {
 			&ps.ID, &ps.DisplayName, (*string)(&ps.ConfigMode),
 			&ps.RegistryImage, &ps.ImageTag, &portsJSON, &volsJSON, &ps.ExtraOptions, &ps.BindHost,
 			&ps.CustomCompose, &ps.StackPath, (*string)(&ps.HealthType), &ps.HealthTarget,
-			&ps.PollInterval, &enabled, &envJSON, &svcJSON, &isSystem, &backupJSON, &createdAt, &updatedAt,
+			&ps.PollInterval, &enabled, &envJSON, &secretEnvJSON, &svcJSON, &isSystem, &backupJSON, &createdAt, &updatedAt,
 			&curDigests, &prevDigests, &desDigests,
 			&status, &lastCheck, &lastDeploy, &lastSuccess, &lastErr,
 		)
@@ -475,7 +758,11 @@ func (db *DB) ListProjectsWithState() ([]types.ProjectWithState, error) {
 
 		json.Unmarshal([]byte(portsJSON), &ps.Ports)
 		json.Unmarshal([]byte(volsJSON), &ps.Volumes)
-		json.Unmarshal([]byte(envJSON), &ps.EnvVars)
+		ps.EnvVars, err = db.decodeProjectEnv(ps.ID, envJSON)
+		if err != nil {
+			return nil, fmt.Errorf("decode project %s environment: %w", ps.ID, err)
+		}
+		json.Unmarshal([]byte(secretEnvJSON), &ps.SecretEnvKeys)
 		json.Unmarshal([]byte(svcJSON), &ps.Services)
 		ps.Backup = unmarshalBackupSpec(backupJSON)
 		ps.Enabled = enabled == 1
@@ -633,21 +920,37 @@ func (db *DB) ListDeployments(projectID string, limit int) ([]types.Deployment, 
 // --- Tunnels ---
 
 func (db *DB) CreateTunnel(t *types.Tunnel) error {
+	secret, err := db.encryptOptionalTunnelSecret(t.ID, "tunnel_secret", t.TunnelSecret)
+	if err != nil {
+		return err
+	}
+	token, err := db.encryptOptionalTunnelSecret(t.ID, "cf_api_token", t.CFAPIToken)
+	if err != nil {
+		return err
+	}
 	now := time.Now().UTC().Format(time.RFC3339)
-	_, err := db.conn.Exec(`
+	_, err = db.conn.Exec(`
 		INSERT INTO tunnels (id, name, cf_tunnel_id, account_tag, tunnel_secret, cf_api_token, enabled, created_at, updated_at)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		t.ID, t.Name, t.CFTunnelID, t.AccountTag, t.TunnelSecret, t.CFAPIToken, boolToInt(t.Enabled), now, now,
+		t.ID, t.Name, t.CFTunnelID, t.AccountTag, secret, token, boolToInt(t.Enabled), now, now,
 	)
 	return err
 }
 
 func (db *DB) UpdateTunnel(t *types.Tunnel) error {
+	secret, err := db.encryptOptionalTunnelSecret(t.ID, "tunnel_secret", t.TunnelSecret)
+	if err != nil {
+		return err
+	}
+	token, err := db.encryptOptionalTunnelSecret(t.ID, "cf_api_token", t.CFAPIToken)
+	if err != nil {
+		return err
+	}
 	now := time.Now().UTC().Format(time.RFC3339)
-	_, err := db.conn.Exec(`
+	_, err = db.conn.Exec(`
 		UPDATE tunnels SET name=?, cf_tunnel_id=?, account_tag=?, tunnel_secret=?, cf_api_token=?, enabled=?, updated_at=?
 		WHERE id=?`,
-		t.Name, t.CFTunnelID, t.AccountTag, t.TunnelSecret, t.CFAPIToken, boolToInt(t.Enabled), now, t.ID,
+		t.Name, t.CFTunnelID, t.AccountTag, secret, token, boolToInt(t.Enabled), now, t.ID,
 	)
 	return err
 }
@@ -661,7 +964,7 @@ func (db *DB) GetTunnel(id string) (*types.Tunnel, error) {
 	row := db.conn.QueryRow(`
 		SELECT id, name, cf_tunnel_id, account_tag, tunnel_secret, cf_api_token, enabled, created_at, updated_at
 		FROM tunnels WHERE id=?`, id)
-	return scanTunnel(row.Scan)
+	return db.scanTunnel(row.Scan)
 }
 
 func (db *DB) ListTunnels() ([]types.Tunnel, error) {
@@ -674,7 +977,7 @@ func (db *DB) ListTunnels() ([]types.Tunnel, error) {
 	defer rows.Close()
 	var tunnels []types.Tunnel
 	for rows.Next() {
-		t, err := scanTunnel(rows.Scan)
+		t, err := db.scanTunnel(rows.Scan)
 		if err != nil {
 			return nil, err
 		}
@@ -683,12 +986,25 @@ func (db *DB) ListTunnels() ([]types.Tunnel, error) {
 	return tunnels, nil
 }
 
-func scanTunnel(scan func(...any) error) (*types.Tunnel, error) {
+func (db *DB) scanTunnel(scan func(...any) error) (*types.Tunnel, error) {
 	var t types.Tunnel
 	var enabled int
 	var createdAt, updatedAt string
 	if err := scan(&t.ID, &t.Name, &t.CFTunnelID, &t.AccountTag, &t.TunnelSecret, &t.CFAPIToken, &enabled, &createdAt, &updatedAt); err != nil {
 		return nil, err
+	}
+	var err error
+	if t.TunnelSecret != "" {
+		t.TunnelSecret, err = db.secrets.decrypt(tunnelSecretAAD(t.ID, "tunnel_secret"), t.TunnelSecret)
+		if err != nil {
+			return nil, fmt.Errorf("decrypt tunnel %s secret: %w", t.ID, err)
+		}
+	}
+	if t.CFAPIToken != "" {
+		t.CFAPIToken, err = db.secrets.decrypt(tunnelSecretAAD(t.ID, "cf_api_token"), t.CFAPIToken)
+		if err != nil {
+			return nil, fmt.Errorf("decrypt tunnel %s API token: %w", t.ID, err)
+		}
 	}
 	t.Enabled = enabled == 1
 	t.CreatedAt, _ = time.Parse(time.RFC3339, createdAt)
@@ -715,23 +1031,27 @@ func (db *DB) GetPasswordHash() (string, error) {
 
 // --- helpers ---
 
-func scanProject(row *sql.Row) (*types.Project, error) {
+func (db *DB) scanProject(scan func(...any) error) (*types.Project, error) {
 	var p types.Project
-	var portsJSON, volsJSON, envJSON, svcJSON, backupJSON string
+	var portsJSON, volsJSON, envJSON, secretEnvJSON, svcJSON, backupJSON string
 	var enabled, isSystem int
 	var createdAt, updatedAt string
-	err := row.Scan(
+	err := scan(
 		&p.ID, &p.DisplayName, (*string)(&p.ConfigMode),
 		&p.RegistryImage, &p.ImageTag, &portsJSON, &volsJSON, &p.ExtraOptions, &p.BindHost,
 		&p.CustomCompose, &p.StackPath, (*string)(&p.HealthType), &p.HealthTarget,
-		&p.PollInterval, &enabled, &envJSON, &svcJSON, &isSystem, &backupJSON, &createdAt, &updatedAt,
+		&p.PollInterval, &enabled, &envJSON, &secretEnvJSON, &svcJSON, &isSystem, &backupJSON, &createdAt, &updatedAt,
 	)
 	if err != nil {
 		return nil, err
 	}
 	json.Unmarshal([]byte(portsJSON), &p.Ports)
 	json.Unmarshal([]byte(volsJSON), &p.Volumes)
-	json.Unmarshal([]byte(envJSON), &p.EnvVars)
+	p.EnvVars, err = db.decodeProjectEnv(p.ID, envJSON)
+	if err != nil {
+		return nil, fmt.Errorf("decode project %s environment: %w", p.ID, err)
+	}
+	json.Unmarshal([]byte(secretEnvJSON), &p.SecretEnvKeys)
 	json.Unmarshal([]byte(svcJSON), &p.Services)
 	p.Backup = unmarshalBackupSpec(backupJSON)
 	p.Enabled = enabled == 1
@@ -741,30 +1061,41 @@ func scanProject(row *sql.Row) (*types.Project, error) {
 	return &p, nil
 }
 
-func scanProjectRows(rows *sql.Rows) (*types.Project, error) {
-	var p types.Project
-	var portsJSON, volsJSON, envJSON, svcJSON, backupJSON string
-	var enabled, isSystem int
-	var createdAt, updatedAt string
-	err := rows.Scan(
-		&p.ID, &p.DisplayName, (*string)(&p.ConfigMode),
-		&p.RegistryImage, &p.ImageTag, &portsJSON, &volsJSON, &p.ExtraOptions, &p.BindHost,
-		&p.CustomCompose, &p.StackPath, (*string)(&p.HealthType), &p.HealthTarget,
-		&p.PollInterval, &enabled, &envJSON, &svcJSON, &isSystem, &backupJSON, &createdAt, &updatedAt,
-	)
+func marshalSecretEnvKeys(env map[string]string, configured []string) string {
+	keys := configured
+	if keys == nil {
+		keys = make([]string, 0, len(env))
+		for key := range env {
+			keys = append(keys, key)
+		}
+	}
+	keys = append([]string(nil), keys...)
+	sort.Strings(keys)
+	data, _ := json.Marshal(keys)
+	return string(data)
+}
+
+func (db *DB) decodeProjectEnv(id, stored string) (map[string]string, error) {
+	plain, err := db.secrets.decrypt(projectEnvAAD(id), stored)
 	if err != nil {
 		return nil, err
 	}
-	json.Unmarshal([]byte(portsJSON), &p.Ports)
-	json.Unmarshal([]byte(volsJSON), &p.Volumes)
-	json.Unmarshal([]byte(envJSON), &p.EnvVars)
-	json.Unmarshal([]byte(svcJSON), &p.Services)
-	p.Backup = unmarshalBackupSpec(backupJSON)
-	p.Enabled = enabled == 1
-	p.IsSystem = isSystem == 1
-	p.CreatedAt, _ = time.Parse(time.RFC3339, createdAt)
-	p.UpdatedAt, _ = time.Parse(time.RFC3339, updatedAt)
-	return &p, nil
+	result := map[string]string{}
+	if err := json.Unmarshal([]byte(plain), &result); err != nil {
+		return nil, fmt.Errorf("parse decrypted environment JSON: %w", err)
+	}
+	return result, nil
+}
+
+func (db *DB) encryptOptionalTunnelSecret(id, field, value string) (string, error) {
+	if value == "" {
+		return "", nil
+	}
+	encrypted, err := db.secrets.encrypt(tunnelSecretAAD(id, field), value)
+	if err != nil {
+		return "", fmt.Errorf("encrypt tunnel %s: %w", field, err)
+	}
+	return encrypted, nil
 }
 
 func boolToInt(b bool) int {

@@ -100,6 +100,22 @@ describe('formToYaml', () => {
     expect(yaml).toContain('KEY: val')
     expect(yaml).not.toMatch(/^\s*: val/m)
   })
+
+  it('serializes secret environment key classification', () => {
+    const yaml = formToYaml(
+      [{ name: 'app', registry_image: 'reg/app', image_tag: 'latest', polled: true }],
+      [['APP_MODE', 'production'], ['API_TOKEN', 'secret']],
+      ['API_TOKEN'],
+    )
+    expect(yaml).toContain('APP_MODE: production')
+    expect(yaml).toContain('secret_env_keys:')
+    expect(yaml).toContain('- API_TOKEN')
+  })
+
+  it('serializes an explicit empty secret set', () => {
+    const yaml = formToYaml([], [['APP_MODE', 'production']], [])
+    expect(yaml).toContain('secret_env_keys: []')
+  })
 })
 
 describe('yamlToForm', () => {
@@ -124,6 +140,27 @@ env_vars:
     expect(result.services[1].name).toBe('redis')
     expect(result.services[1].polled).toBe(false)
     expect(result.envPairs).toEqual([['KEY', 'val']])
+    expect(result.secretEnvKeys).toEqual(['KEY'])
+  })
+
+  it('parses explicit secret environment keys', () => {
+    const result = yamlToForm(`
+env_vars:
+  APP_MODE: production
+  API_TOKEN: secret
+secret_env_keys:
+  - API_TOKEN
+`)
+    expect(result.secretEnvKeys).toEqual(['API_TOKEN'])
+  })
+
+  it('preserves an explicit empty secret set', () => {
+    const result = yamlToForm(`
+env_vars:
+  APP_MODE: production
+secret_env_keys: []
+`)
+    expect(result.secretEnvKeys).toEqual([])
   })
 
   it('parses pull policy from service YAML', () => {
@@ -169,8 +206,8 @@ services:
   })
 
   it('returns empty arrays for empty/null input', () => {
-    expect(yamlToForm('')).toEqual({ services: [], envPairs: [] })
-    expect(yamlToForm('null')).toEqual({ services: [], envPairs: [] })
+    expect(yamlToForm('')).toEqual({ services: [], envPairs: [], secretEnvKeys: [] })
+    expect(yamlToForm('null')).toEqual({ services: [], envPairs: [], secretEnvKeys: [] })
   })
 
   it('throws on invalid YAML', () => {
